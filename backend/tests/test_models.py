@@ -1,15 +1,11 @@
-from app.models import Customer, Message, Order, SupportRequest, SupportResponse
+from app.models import Message, Order, SupportRequest, SupportResponse
 
 
 def test_support_request_defaults_are_safe():
-    request = SupportRequest(
-        customer=Customer(id="c1", name="Maya", email="maya@example.com"),
-        message="Help with my order",
-    )
+    request = SupportRequest(customer_id="c1", message="Help with my order")
 
-    assert request.conversation == []
-    assert request.orders == []
-    assert request.customer.tier == "standard"
+    assert request.customer_id == "c1"
+    assert request.conversation_id is None
 
 
 def test_support_response_carries_memory_and_action_metadata():
