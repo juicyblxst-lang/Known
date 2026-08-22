@@ -17,14 +17,17 @@ SHOPIFY_API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2026-07")
 SHOPIFY_SCOPES = os.getenv("SHOPIFY_SCOPES", "read_customers,read_orders").strip()
 SHOP_DOMAIN_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\.myshopify\.com$")
 
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
 
 def validate_shop_domain(value: str) -> str:
     shop = value.strip().lower().replace("https://", "").replace("http://", "").rstrip("/")
     if not SHOP_DOMAIN_RE.fullmatch(shop):
         raise ValueError("Enter a valid Shopify myshopify.com domain")
     return shop
+
 
 def _fernet() -> Fernet:
     key = os.getenv("SHOPIFY_TOKEN_ENCRYPTION_KEY", "")
@@ -35,11 +38,14 @@ def _fernet() -> Fernet:
     except Exception as exc:
         raise RuntimeError("SHOPIFY_TOKEN_ENCRYPTION_KEY is invalid") from exc
 
+
 def encrypt_token(token: str) -> str:
     return _fernet().encrypt(token.encode()).decode()
 
+
 def decrypt_token(token: str) -> str:
     return _fernet().decrypt(token.encode()).decode()
+
 
 def _supabase() -> tuple[str, dict[str, str]]:
     url = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -48,12 +54,14 @@ def _supabase() -> tuple[str, dict[str, str]]:
         raise RuntimeError("Supabase backend is not configured")
     return url, {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
+
 def _db_get(table: str, params: dict[str, str]) -> list[dict[str, Any]]:
     url, headers = _supabase()
     response = httpx.get(f"{url}/rest/v1/{table}", params=params, headers=headers, timeout=10)
     response.raise_for_status()
     data = response.json()
     return data if isinstance(data, list) else []
+
 
 def _db_write(table: str, payload: dict[str, Any], *, conflict: str | None = None) -> dict[str, Any] | None:
     url, headers = _supabase()
@@ -63,6 +71,7 @@ def _db_write(table: str, payload: dict[str, Any], *, conflict: str | None = Non
     rows = response.json()
     return rows[0] if rows else None
 
+
 def _db_patch(table: str, filters: dict[str, str], payload: dict[str, Any]) -> dict[str, Any] | None:
     url, headers = _supabase()
     response = httpx.patch(f"{url}/rest/v1/{table}", params=filters, headers={**headers, "Prefer": "return=representation"}, json=payload, timeout=10)
@@ -70,10 +79,12 @@ def _db_patch(table: str, filters: dict[str, str], payload: dict[str, Any]) -> d
     rows = response.json()
     return rows[0] if rows else None
 
+
 def create_oauth_state(business_id: str, user_id: str, shop_domain: str) -> str:
     nonce = secrets.token_urlsafe(32)
     _db_write("shopify_oauth_states", {"nonce": nonce, "business_id": business_id, "user_id": user_id, "shop_domain": shop_domain, "expires_at": (utcnow() + timedelta(minutes=10)).isoformat()})
     return nonce
+
 
 def consume_oauth_state(nonce: str, shop_domain: str) -> dict[str, Any]:
     rows = _db_get("shopify_oauth_states", {"nonce": f"eq.{nonce}", "shop_domain": f"eq.{shop_domain}", "used_at": "is.null", "limit": "1"})
@@ -85,6 +96,7 @@ def consume_oauth_state(nonce: str, shop_domain: str) -> dict[str, Any]:
     _db_patch("shopify_oauth_states", {"nonce": f"eq.{nonce}"}, {"used_at": utcnow().isoformat()})
     return state
 
+
 def verify_oauth_hmac(params: dict[str, str]) -> bool:
     secret = os.getenv("SHOPIFY_CLIENT_SECRET", "")
     supplied = params.get("hmac")
@@ -94,6 +106,7 @@ def verify_oauth_hmac(params: dict[str, str]) -> bool:
     digest = hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
     return hmac.compare_digest(digest, supplied)
 
+
 def authorization_url(shop_domain: str, state: str) -> str:
     client_id = os.getenv("SHOPIFY_CLIENT_ID", "")
     redirect_uri = os.getenv("SHOPIFY_REDIRECT_URI", "")
@@ -101,14 +114,60 @@ def authorization_url(shop_domain: str, state: str) -> str:
         raise RuntimeError("SHOPIFY_CLIENT_ID and SHOPIFY_REDIRECT_URI are required")
     return f"https://{shop_domain}/admin/oauth/authorize?{urlencode({'client_id': client_id, 'scope': SHOPIFY_SCOPES, 'redirect_uri': redirect_uri, 'state': state})}"
 
+
 def exchange_code(shop_domain: str, code: str) -> dict[str, Any]:
     client_id = os.getenv("SHOPIFY_CLIENT_ID", "")
     client_secret = os.getenv("SHOPIFY_CLIENT_SECRET", "")
     if not client_id or not client_secret:
         raise RuntimeError("SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET are required")
-    response = httpx.post(f"https://{shop_domain}/admin/oauth/access_token", json={"client_id": client_id, "client_secret": client_secret, "code": code}, timeout=15)
+    response = httpx.post(
+        f"https://{shop_domain}/admin/oauth/access_token",
+        data={"client_id": client_id, "client_secret": client_secret, "code": code, "expiring": "1"},
+        headers={"Accept": "application/json"},
+        timeout=15,
+    )
     response.raise_for_status()
     return response.json()
+
+
+def _refresh_installation(installation: dict[str, Any]) -> str:
+    refresh_encrypted = installation.get("refresh_token_encrypted")
+    if not refresh_encrypted:
+        raise RuntimeError("Shopify access token expired and no refresh token is stored; reconnect the store")
+    client_id = os.getenv("SHOPIFY_CLIENT_ID", "")
+    client_secret = os.getenv("SHOPIFY_CLIENT_SECRET", "")
+    if not client_id or not client_secret:
+        raise RuntimeError("SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET are required")
+    response = httpx.post(
+        f"https://{installation['shop_domain']}/admin/oauth/access_token",
+        data={"client_id": client_id, "client_secret": client_secret, "grant_type": "refresh_token", "refresh_token": decrypt_token(refresh_encrypted)},
+        headers={"Accept": "application/json"},
+        timeout=15,
+    )
+    response.raise_for_status()
+    token_data = response.json()
+    expires_in = int(token_data.get("expires_in", 3600))
+    refresh_expires_in = token_data.get("refresh_token_expires_in")
+    _db_patch("shopify_installations", {"id": f"eq.{installation['id']}"}, {
+        "access_token_encrypted": encrypt_token(token_data["access_token"]),
+        "refresh_token_encrypted": encrypt_token(token_data["refresh_token"]) if token_data.get("refresh_token") else refresh_encrypted,
+        "access_token_expires_at": (utcnow() + timedelta(seconds=expires_in)).isoformat(),
+        "refresh_token_expires_at": (utcnow() + timedelta(seconds=int(refresh_expires_in))).isoformat() if refresh_expires_in else installation.get("refresh_token_expires_at"),
+        "updated_at": utcnow().isoformat(),
+    })
+    return token_data["access_token"]
+
+
+def access_token_for_installation(installation: dict[str, Any]) -> str:
+    token = decrypt_token(installation["access_token_encrypted"])
+    expires_raw = installation.get("access_token_expires_at")
+    if not expires_raw:
+        return token
+    expires_at = datetime.fromisoformat(str(expires_raw).replace("Z", "+00:00"))
+    if expires_at <= utcnow() + timedelta(minutes=5):
+        return _refresh_installation(installation)
+    return token
+
 
 def _graphql(shop_domain: str, token: str, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
     response = httpx.post(f"https://{shop_domain}/admin/api/{SHOPIFY_API_VERSION}/graphql.json", headers={"X-Shopify-Access-Token": token, "Content-Type": "application/json"}, json={"query": query, "variables": variables or {}}, timeout=20)
@@ -117,6 +176,7 @@ def _graphql(shop_domain: str, token: str, query: str, variables: dict[str, Any]
     if body.get("errors"):
         raise RuntimeError("Shopify GraphQL request failed")
     return body.get("data") or {}
+
 
 def _page_query(shop_domain: str, token: str, query: str, root: str) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
@@ -128,22 +188,26 @@ def _page_query(shop_domain: str, token: str, query: str, root: str) -> list[dic
             return items
         cursor = connection["pageInfo"]["endCursor"]
 
+
 CUSTOMERS_QUERY = """query Customers($cursor: String) { customers(first: 100, after: $cursor) { nodes { id firstName lastName displayName email } pageInfo { hasNextPage endCursor } } }"""
 ORDERS_QUERY = """query Orders($cursor: String) { orders(first: 100, after: $cursor, sortKey: UPDATED_AT) { nodes { id name updatedAt createdAt displayFinancialStatus displayFulfillmentStatus totalPriceSet { shopMoney { amount currencyCode } } customer { id } lineItems(first: 50) { nodes { name quantity } } } pageInfo { hasNextPage endCursor } } }"""
 SHOP_QUERY = "query { shop { name myshopifyDomain } }"
 
+
 def _stable_customer_id(shop_domain: str, shopify_id: str) -> str:
     return "shopify_customer_" + hashlib.sha256(f"{shop_domain}:{shopify_id}".encode()).hexdigest()[:32]
 
+
 def _stable_order_id(shop_domain: str, shopify_id: str) -> str:
     return "shopify_order_" + hashlib.sha256(f"{shop_domain}:{shopify_id}".encode()).hexdigest()[:32]
+
 
 def sync_shop(business_id: str, shop_domain: str) -> dict[str, int]:
     rows = _db_get("shopify_installations", {"business_id": f"eq.{business_id}", "shop_domain": f"eq.{shop_domain}", "limit": "1"})
     if not rows:
         raise ValueError("Shopify store is not connected to this business")
     installation = rows[0]
-    token = decrypt_token(installation["access_token_encrypted"])
+    token = access_token_for_installation(installation)
     try:
         customers = _page_query(shop_domain, token, CUSTOMERS_QUERY, "customers")
         orders = _page_query(shop_domain, token, ORDERS_QUERY, "orders")
@@ -168,11 +232,16 @@ def sync_shop(business_id: str, shop_domain: str) -> dict[str, int]:
         _db_patch("shopify_installations", {"business_id": f"eq.{business_id}", "shop_domain": f"eq.{shop_domain}"}, {"sync_status": "failed", "sync_error": str(exc)[:500], "updated_at": utcnow().isoformat()})
         raise
 
+
 def save_installation(business_id: str, shop_domain: str, token_data: dict[str, Any]) -> None:
+    if not token_data.get("access_token") or not token_data.get("refresh_token"):
+        raise RuntimeError("Shopify did not return the expiring offline token pair required by Known")
     scopes = [x for x in str(token_data.get("scope", SHOPIFY_SCOPES)).split(",") if x]
-    expires_at = (utcnow() + timedelta(seconds=int(token_data["expires_in"]))).isoformat() if token_data.get("expires_in") else None
+    expires_at = (utcnow() + timedelta(seconds=int(token_data.get("expires_in", 3600)))).isoformat()
+    refresh_expires_at = (utcnow() + timedelta(seconds=int(token_data.get("refresh_token_expires_in", 7776000)))).isoformat()
     shop = _graphql(shop_domain, token_data["access_token"], SHOP_QUERY)["shop"]
-    _db_write("shopify_installations", {"business_id": business_id, "shop_domain": shop_domain, "shop_name": shop.get("name"), "access_token_encrypted": encrypt_token(token_data["access_token"]), "refresh_token_encrypted": encrypt_token(token_data["refresh_token"]) if token_data.get("refresh_token") else None, "access_token_expires_at": expires_at, "scopes": scopes, "updated_at": utcnow().isoformat(), "sync_status": "pending"}, conflict="business_id")
+    _db_write("shopify_installations", {"business_id": business_id, "shop_domain": shop_domain, "shop_name": shop.get("name"), "access_token_encrypted": encrypt_token(token_data["access_token"]), "refresh_token_encrypted": encrypt_token(token_data["refresh_token"]), "access_token_expires_at": expires_at, "refresh_token_expires_at": refresh_expires_at, "scopes": scopes, "updated_at": utcnow().isoformat(), "sync_status": "pending"}, conflict="business_id")
+
 
 def verify_webhook(body: bytes, hmac_header: str | None) -> bool:
     secret = os.getenv("SHOPIFY_CLIENT_SECRET", "")
@@ -181,18 +250,31 @@ def verify_webhook(body: bytes, hmac_header: str | None) -> bool:
     digest = base64.b64encode(hmac.new(secret.encode(), body, hashlib.sha256).digest()).decode()
     return hmac.compare_digest(digest, hmac_header)
 
-def webhook_seen(webhook_id: str, shop_domain: str, topic: str) -> bool:
+
+def webhook_claim(webhook_id: str, shop_domain: str, topic: str) -> str:
     if not webhook_id:
-        return False
+        return "new"
     rows = _db_get("shopify_webhook_events", {"webhook_id": f"eq.{webhook_id}", "limit": "1"})
     if rows:
-        return True
-    _db_write("shopify_webhook_events", {"webhook_id": webhook_id, "shop_domain": shop_domain, "topic": topic})
-    return False
+        return str(rows[0].get("status", "processing"))
+    _db_write("shopify_webhook_events", {"webhook_id": webhook_id, "shop_domain": shop_domain, "topic": topic, "status": "processing"})
+    return "new"
+
+
+def webhook_complete(webhook_id: str) -> None:
+    if webhook_id:
+        _db_patch("shopify_webhook_events", {"webhook_id": f"eq.{webhook_id}"}, {"status": "processed", "processed_at": utcnow().isoformat(), "error": None})
+
+
+def webhook_fail(webhook_id: str, error: str) -> None:
+    if webhook_id:
+        _db_patch("shopify_webhook_events", {"webhook_id": f"eq.{webhook_id}"}, {"status": "failed", "error": error[:500]})
+
 
 def installation(business_id: str) -> dict[str, Any] | None:
     rows = _db_get("shopify_installations", {"business_id": f"eq.{business_id}", "select": "shop_domain,shop_name,scopes,installed_at,last_synced_at,sync_status,sync_error", "limit": "1"})
     return rows[0] if rows else None
+
 
 def installation_by_shop(shop_domain: str) -> dict[str, Any] | None:
     rows = _db_get("shopify_installations", {"shop_domain": f"eq.{shop_domain}", "limit": "1"})
