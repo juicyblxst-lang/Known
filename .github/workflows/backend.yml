@@ -28,8 +28,36 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt pytest
 
+      - name: Verify test modules have unique basenames
+        working-directory: .
+        run: |
+          duplicates=$(find backend -type f -name 'test_*.py' -printf '%f\n' | sort | uniq -d)
+          if [ -n "$duplicates" ]; then
+            echo "Duplicate pytest module basenames detected:"
+            echo "$duplicates"
+            exit 1
+          fi
+
+      - name: Compile backend
+        run: python -m compileall -q app
+
       - name: Run tests
         run: python -m pytest -q
+
+      - name: Validate frontend assets
+        working-directory: .
+        run: |
+          test -f frontend/index.html
+          test -f frontend/login.html
+          test -f frontend/app.js
+          test -f frontend/auth.js
+          grep -q '/api/config' frontend/auth.js
+          grep -q '/api/support' frontend/app.js
+
+      - name: Validate frontend JavaScript syntax
+        run: |
+          node --check ../frontend/app.js
+          node --check ../frontend/auth.js
 
   container:
     runs-on: ubuntu-latest
@@ -43,13 +71,28 @@ jobs:
 
       - name: Smoke test production container
         run: |
+          set -e
           docker run -d --name known-ci -p 8000:8000 known-ci
-          for attempt in $(seq 1 20); do
+          trap 'docker logs known-ci || true; docker rm -f known-ci || true' EXIT
+
+          for attempt in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:8000/health > /tmp/health.json; then
-              cat /tmp/health.json
-              exit 0
+              break
             fi
             sleep 1
           done
-          docker logs known-ci
-          exit 1
+
+          grep -q '"status":"ok"' /tmp/health.json
+
+          curl --fail --silent http://127.0.0.1:8000/ > /tmp/index.html
+          grep -q '<html' /tmp/index.html
+
+          curl --fail --silent http://127.0.0.1:8000/login.html > /tmp/login.html
+          grep -q '<form' /tmp/login.html
+
+          curl --fail --silent http://127.0.0.1:8000/api/config > /tmp/config.json
+          grep -q 'supabase_url' /tmp/config.json
+          grep -q 'supabase_anon_key' /tmp/config.json
+
+          curl --fail --silent http://127.0.0.1:8000/ready > /tmp/ready.json
+          grep -q '"checks"' /tmp/ready.json
