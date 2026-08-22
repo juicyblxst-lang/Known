@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
+from .auth import AuthContext, require_auth
 from .demo import comparison
 from .memory import SibylMemory
 from .store import StructuredStore
@@ -13,9 +14,13 @@ memory = SibylMemory()
 
 
 @router.get("/workspace/{customer_id}", response_model=WorkspaceResponse)
-def get_workspace(customer_id: str, memory_query: str = Query("customer history")) -> WorkspaceResponse:
-    customer = store.customer(customer_id)
-    orders = store.orders(customer_id)
+async def get_workspace(
+    customer_id: str,
+    memory_query: str = Query("customer history"),
+    auth: AuthContext = Depends(require_auth),
+) -> WorkspaceResponse:
+    customer = store.customer(customer_id, auth.business_id)
+    orders = store.orders(customer_id, auth.business_id)
     retrieved = memory.search(customer_id, memory_query)
     return WorkspaceResponse(
         customer=customer,
