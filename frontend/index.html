@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Known — Customer Workspace</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar">
+      <div class="brand">Known</div>
+      <div class="label">CUSTOMERS</div>
+      <button class="customer active"><span>M</span><div><strong>Maya Chen</strong><small>VIP · maya@example.com</small></div></button>
+      <button class="customer"><span>J</span><div><strong>Jordan Lee</strong><small>Standard · jordan@example.com</small></div></button>
+      <button class="customer"><span>A</span><div><strong>Alex Morgan</strong><small>Standard · alex@example.com</small></div></button>
+      <div class="sidebar-foot">Memory-first support</div>
+    </aside>
+    <main class="main">
+      <header><div><div class="eyebrow">CUSTOMER WORKSPACE</div><h1>Maya Chen</h1><p>VIP · maya@example.com</p></div><div class="connection"><i></i> Connected</div></header>
+      <section class="layout">
+        <div class="conversation panel">
+          <div class="panel-head"><span>Conversation</span><span id="session">Session: local-development</span></div>
+          <div id="messages" class="messages">
+            <div class="msg customer-msg"><small>MAYA · NOW</small><p>My order is late and I need help before Friday.</p></div>
+            <div class="msg agent-msg"><small>KNOWN · NOW</small><p>I found the delayed order and relevant customer history. I’ll prioritize a delivery update and use Maya’s preference for expedited shipping when timing is critical.</p><div class="recommendation"><b>Recommended action</b><span>Prioritize the latest shipment check and, if delivery cannot meet the deadline, offer the customer's preferred expedited resolution.</span></div></div>
+          </div>
+          <form id="composer"><input id="message" autocomplete="off" placeholder="Reply to Maya…" /><button>Send</button></form>
+        </div>
+        <aside class="context">
+          <section class="panel"><div class="panel-head">Customer</div><div class="context-body"><h2>Maya Chen</h2><p>VIP customer</p><dl><dt>Email</dt><dd>maya@example.com</dd><dt>Customer ID</dt><dd>demo-customer</dd></dl></div></section>
+          <section class="panel"><div class="panel-head">Orders</div><div class="context-body"><div class="order"><b>ORD-1042</b><span class="status delayed">Delayed</span><small>$128 · linen shirt</small></div><div class="order"><b>ORD-0981</b><span class="status delivered">Delivered</span><small>$86</small></div></div></section>
+          <section class="panel memory-panel"><div class="panel-head">Relevant memory <span class="memory-count">2</span></div><div class="context-body"><article><label>PREFERENCE</label><p>Maya prefers expedited shipping when an order is time-sensitive.</p></article><article><label>HISTORY</label><p>Maya previously asked support to proactively monitor a delayed shipment.</p></article><small class="source">Retrieved from Sibyl Memory</small></div></section>
+        </aside>
+      </section>
+    </main>
+  </div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
