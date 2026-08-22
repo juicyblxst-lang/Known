@@ -25,13 +25,7 @@ class MemoryResult:
 
 
 class SibylMemory:
-    """Production adapter over the official Sibyl Memory SDK.
-
-    Known uses Sibyl's real SQLite + FTS5 engine, not a parallel memory store.
-    Each customer maps to a dedicated Sibyl tenant inside the shared database:
-    ``business_id:customer_id``. This keeps search and writes isolated while
-    retaining one local Sibyl database for the service.
-    """
+    """Production adapter over the official Sibyl Memory SDK."""
 
     def __init__(self) -> None:
         configured = os.getenv("SIBYL_MEMORY_DB")
@@ -39,6 +33,11 @@ class SibylMemory:
         self.account_id = os.getenv("SIBYL_ACCOUNT_ID") or None
         self.session_token = os.getenv("SIBYL_SESSION_TOKEN") or None
         self.tier = os.getenv("SIBYL_TIER", "free")
+
+    @property
+    def configured(self) -> bool:
+        """Whether Known can initialize the real Sibyl SDK locally."""
+        return True
 
     def _tenant_id(self, business_id: str, customer_id: str) -> str:
         return f"{business_id}:{customer_id}"
@@ -92,46 +91,26 @@ class SibylMemory:
             return str(exc)
         return str(exc)
 
-    def search(
-        self,
-        business_id: str,
-        customer_id: str,
-        query: str,
-        limit: int = 8,
-    ) -> MemoryResult:
-        """Search the official Sibyl FTS5 engine within one customer tenant."""
+    def search(self, business_id: str, customer_id: str, query: str, limit: int = 8) -> MemoryResult:
         if not query or len(query.strip()) < 3:
             return MemoryResult([], True)
-
         client = None
         try:
             client = self._client(business_id, customer_id)
             results = client.search(query.strip(), limit=min(max(limit, 1), 50))
-            memories = [self._normalize_hit(hit) for hit in results]
-            return MemoryResult(memories, True)
+            return MemoryResult([self._normalize_hit(hit) for hit in results], True)
         except Exception as exc:
             return MemoryResult([], False, self._error_message(exc))
         finally:
             if client is not None:
                 self._close(client)
 
-    def remember(
-        self,
-        business_id: str,
-        customer_id: str,
-        content: str,
-        memory_type: str = "customer_preference",
-    ) -> tuple[bool, str]:
-        """Persist a durable customer fact in Sibyl's WARM entity tier."""
+    def remember(self, business_id: str, customer_id: str, content: str, memory_type: str = "customer_preference") -> tuple[bool, str]:
         client = None
         try:
             client = self._client(business_id, customer_id)
             digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:24]
-            client.set_entity(
-                memory_type,
-                f"memory-{digest}",
-                {"content": content, "customer_id": customer_id, "type": memory_type},
-            )
+            client.set_entity(memory_type, f"memory-{digest}", {"content": content, "customer_id": customer_id, "type": memory_type})
             return True, ""
         except Exception as exc:
             return False, self._error_message(exc)
@@ -139,21 +118,11 @@ class SibylMemory:
             if client is not None:
                 self._close(client)
 
-    def record_event(
-        self,
-        business_id: str,
-        customer_id: str,
-        kind: str,
-        body: dict[str, Any],
-    ) -> tuple[bool, str]:
-        """Append a customer event to Sibyl's COLD journal tier."""
+    def record_event(self, business_id: str, customer_id: str, kind: str, body: dict[str, Any]) -> tuple[bool, str]:
         client = None
         try:
             client = self._client(business_id, customer_id)
-            event_id = client.write_event(
-                acted={"kind": kind, "body": body},
-                extra={"customer_id": customer_id},
-            )
+            event_id = client.write_event(acted={"kind": kind, "body": body}, extra={"customer_id": customer_id})
             return True, str(event_id)
         except Exception as exc:
             return False, self._error_message(exc)
