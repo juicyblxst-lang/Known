@@ -7,11 +7,7 @@ import httpx
 
 
 class StructuredStore:
-    """Supabase REST adapter for structured support data.
-
-    The service remains usable without Supabase for local development; callers
-    receive empty data rather than fabricated customer/order records.
-    """
+    """Supabase REST adapter for tenant-scoped structured support data."""
 
     def __init__(self) -> None:
         self.url = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -34,9 +30,15 @@ class StructuredStore:
         data = response.json()
         return data if isinstance(data, list) else []
 
-    def customer(self, customer_id: str) -> dict[str, Any] | None:
-        rows = self._get("customers", {"id": f"eq.{customer_id}", "limit": "1"})
+    def customer(self, customer_id: str, business_id: str | None = None) -> dict[str, Any] | None:
+        params = {"id": f"eq.{customer_id}", "limit": "1"}
+        if business_id:
+            params["business_id"] = f"eq.{business_id}"
+        rows = self._get("customers", params)
         return rows[0] if rows else None
 
-    def orders(self, customer_id: str) -> list[dict[str, Any]]:
-        return self._get("orders", {"customer_id": f"eq.{customer_id}", "order": "created_at.desc"})
+    def orders(self, customer_id: str, business_id: str | None = None) -> list[dict[str, Any]]:
+        params = {"customer_id": f"eq.{customer_id}", "order": "created_at.desc"}
+        if business_id:
+            params["business_id"] = f"eq.{business_id}"
+        return self._get("orders", params)
