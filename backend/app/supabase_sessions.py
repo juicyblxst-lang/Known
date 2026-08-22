@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -60,8 +61,6 @@ class SupabaseSessionStore:
         existing = self.get(session_id, customer_id, business_id)
         if existing is not None:
             return existing
-        # Check an existing ID independently so a session belonging to another
-        # customer or tenant cannot be silently reused.
         rows = self._request("GET", "conversations", params={"id": f"eq.{session_id}", "select": "id,customer_id,business_id", "limit": "1"})
         if rows and (rows[0]["customer_id"] != customer_id or str(rows[0]["business_id"]) != str(business_id)):
             raise ValueError("session does not belong to customer")
@@ -70,4 +69,9 @@ class SupabaseSessionStore:
 
     def append(self, session_id: str, message: Message) -> None:
         self._request("POST", "conversation_messages", json={"conversation_id": session_id, "role": message.role, "content": message.content})
-        self._request("PATCH", "conversations", params={"id": f"eq.{session_id}"}, json={"updated_at": "now()"})
+        self._request(
+            "PATCH",
+            "conversations",
+            params={"id": f"eq.{session_id}"},
+            json={"updated_at": datetime.now(timezone.utc).isoformat()},
+        )
