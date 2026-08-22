@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from .auth import AuthContext, require_auth
@@ -15,6 +17,14 @@ memory = SibylMemory()
 sessions = SupabaseSessionStore()
 
 
+@router.get("/config")
+def get_public_config() -> dict[str, str]:
+    return {
+        "supabase_url": os.getenv("SUPABASE_URL", ""),
+        "supabase_anon_key": os.getenv("SUPABASE_ANON_KEY", ""),
+    }
+
+
 @router.get("/customers")
 async def get_customers(auth: AuthContext = Depends(require_auth)) -> list[dict]:
     return store.customers(auth.business_id)
@@ -27,6 +37,8 @@ async def get_workspace(
     auth: AuthContext = Depends(require_auth),
 ) -> WorkspaceResponse:
     customer = store.customer(customer_id, auth.business_id)
+    if customer is None:
+        raise HTTPException(status_code=404, detail="customer not found")
     orders = store.orders(customer_id, auth.business_id)
     retrieved = memory.search(customer_id, memory_query)
     return WorkspaceResponse(
