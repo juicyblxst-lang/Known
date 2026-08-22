@@ -10,7 +10,8 @@ from pydantic import BaseModel
 from .auth import AuthContext, require_auth
 from .memory import SibylMemory
 from .models import ActionRequest, ActionResponse
-from .shopify import authorization_url, consume_oauth_state, create_oauth_state, exchange_code, installation, installation_by_shop, save_installation, sync_shop, validate_shop_domain, verify_oauth_hmac, verify_webhook, webhook_seen
+from .shopify import authorization_url, consume_oauth_state, create_oauth_state, decrypt_token, exchange_code, installation, installation_by_shop, save_installation, sync_shop, validate_shop_domain, verify_oauth_hmac, verify_webhook, webhook_seen
+from .shopify_webhooks import register_webhooks
 from .store import StructuredStore
 from .supabase_sessions import SupabaseSessionStore
 from .workspace import WorkspaceResponse
@@ -24,11 +25,9 @@ sessions = SupabaseSessionStore()
 def upstream_error() -> HTTPException:
     return HTTPException(status_code=502, detail="Upstream data service unavailable")
 
-
 @router.get("/config")
 def get_public_config() -> dict[str, str]:
     return {"supabase_url": os.getenv("SUPABASE_URL", ""), "supabase_anon_key": os.getenv("SUPABASE_ANON_KEY", "")}
-
 
 @router.get("/customers")
 async def get_customers(auth: AuthContext = Depends(require_auth)) -> list[dict]:
@@ -36,7 +35,6 @@ async def get_customers(auth: AuthContext = Depends(require_auth)) -> list[dict]
         return store.customers(auth.business_id)
     except (httpx.HTTPError, ValueError):
         raise upstream_error()
-
 
 @router.get("/workspace/{customer_id}", response_model=WorkspaceResponse)
 async def get_workspace(customer_id: str, memory_query: str = Query("customer history"), auth: AuthContext = Depends(require_auth)) -> WorkspaceResponse:
@@ -52,23 +50,17 @@ async def get_workspace(customer_id: str, memory_query: str = Query("customer hi
     retrieved = memory.search(auth.business_id, customer_id, memory_query)
     return WorkspaceResponse(customer=customer, orders=orders, memory=retrieved.memories, memory_available=retrieved.available)
 
-
 @router.post("/actions", response_model=ActionResponse)
 async def execute_action(request: ActionRequest, auth: AuthContext = Depends(require_auth)) -> ActionResponse:
-    # Never pretend a local Supabase status change is a real Shopify action.
-    # Real refunds/returns/cancellations must use Shopify's authorized APIs.
     raise HTTPException(status_code=501, detail="Commerce actions are not enabled yet. Known will not fabricate a Shopify action.")
-
 
 class ShopifyConnectRequest(BaseModel):
     shop_domain: str
-
 
 @router.get("/shopify/status")
 async def shopify_status(auth: AuthContext = Depends(require_auth)) -> dict:
     connected = installation(auth.business_id)
     return {"connected": bool(connected), "installation": connected}
-
 
 @router.post("/shopify/connect")
 async def shopify_connect(request: ShopifyConnectRequest, auth: AuthContext = Depends(require_auth)) -> dict[str, str]:
@@ -80,7 +72,6 @@ async def shopify_connect(request: ShopifyConnectRequest, auth: AuthContext = De
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-
 
 @router.post("/shopify/sync")
 async def shopify_sync(auth: AuthContext = Depends(require_auth)) -> dict[str, object]:
@@ -95,7 +86,6 @@ async def shopify_sync(auth: AuthContext = Depends(require_auth)) -> dict[str, o
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-
 @router.get("/shopify/callback")
 async def shopify_callback(request: Request) -> RedirectResponse:
     try:
@@ -105,18 +95,17 @@ async def shopify_callback(request: Request) -> RedirectResponse:
             raise HTTPException(status_code=401, detail="Invalid Shopify OAuth signature")
         if params.get("error"):
             raise HTTPException(status_code=400, detail="Shopify authorization was not completed")
-        code = params.get("code")
-        state = params.get("state")
+        code, state = params.get("code"), params.get("state")
         if not code or not state:
             raise HTTPException(status_code=400, detail="Missing Shopify authorization parameters")
         state_data = consume_oauth_state(state, shop_domain)
         token_data = exchange_code(shop_domain, code)
         save_installation(state_data["business_id"], shop_domain, token_data)
+        register_webhooks(shop_domain, token_data["access_token"])
         sync_shop(state_data["business_id"], shop_domain)
         return RedirectResponse(url="/?shopify=connected", status_code=303)
     except Exception:
         return RedirectResponse(url="/?shopify=error", status_code=303)
-
 
 @router.post("/shopify/webhooks")
 async def shopify_webhook(request: Request) -> dict[str, str]:
@@ -138,7 +127,6 @@ async def shopify_webhook(request: Request) -> dict[str, str]:
     except Exception:
         return {"status": "accepted", "sync": "deferred"}
     return {"status": "accepted", "sync": "complete"}
-
 
 @router.get("/sessions/{session_id}")
 async def get_conversation_session(session_id: str, customer_id: str, auth: AuthContext = Depends(require_auth)) -> dict:
