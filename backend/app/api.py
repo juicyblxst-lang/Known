@@ -18,8 +18,8 @@ memory = SibylMemory()
 sessions = SupabaseSessionStore()
 
 
-def upstream_error(exc: Exception) -> HTTPException:
-    return HTTPException(status_code=502, detail="Upstream data service unavailable") from exc
+def upstream_error() -> HTTPException:
+    return HTTPException(status_code=502, detail="Upstream data service unavailable")
 
 
 @router.get("/config")
@@ -34,8 +34,8 @@ def get_public_config() -> dict[str, str]:
 async def get_customers(auth: AuthContext = Depends(require_auth)) -> list[dict]:
     try:
         return store.customers(auth.business_id)
-    except (httpx.HTTPError, ValueError) as exc:
-        raise upstream_error(exc)
+    except (httpx.HTTPError, ValueError):
+        raise upstream_error()
 
 
 @router.get("/workspace/{customer_id}", response_model=WorkspaceResponse)
@@ -51,8 +51,8 @@ async def get_workspace(
         orders = store.orders(customer_id, auth.business_id)
     except HTTPException:
         raise
-    except (httpx.HTTPError, ValueError) as exc:
-        raise upstream_error(exc)
+    except (httpx.HTTPError, ValueError):
+        raise upstream_error()
 
     retrieved = memory.search(customer_id, memory_query)
     return WorkspaceResponse(
@@ -73,8 +73,8 @@ async def get_conversation_session(
         return {"session_id": session_id, "customer_id": customer_id, "messages": [], "persistence": "local-development"}
     try:
         session = sessions.get(session_id, customer_id, auth.business_id)
-    except (httpx.HTTPError, ValueError) as exc:
-        raise upstream_error(exc)
+    except (httpx.HTTPError, ValueError):
+        raise upstream_error()
     if session is None:
         return {"session_id": session_id, "customer_id": customer_id, "messages": [], "persistence": "supabase"}
     return {
