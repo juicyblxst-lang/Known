@@ -16,7 +16,7 @@ class FakeResponses:
 
     def create(self, *, model, instructions, input):
         self.inputs.append(input)
-        return FakeResponse("Personalized response" if "expedited shipping" in input.lower() else "Generic response")
+        return FakeResponse("Personalized response" if "Maya prefers expedited handling" in input else "Generic response")
 
 
 class FakeClient:
@@ -28,24 +28,28 @@ def request(message):
     return SupportRequest(customer_id="customer-1", message=message)
 
 
+def auth():
+    return type("Auth", (), {"business_id": "business-1"})()
+
+
 def test_session_one_memory_changes_session_two_reasoning(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("SIBYL_MEMORY_DB", str(tmp_path / "memory.db"))
     memory = SibylMemory()
     client = FakeClient()
     agent = KnownAgent(memory=memory, client=client)
 
-    first = agent.handle(request("Please remember I prefer expedited shipping when an order is time-sensitive."), auth=type("Auth", (), {"business_id": "business-1"})())
+    first = agent.handle(request("Please remember Maya prefers expedited handling for late deliveries."), auth=auth())
     assert first.memory_written is True
 
-    second = agent.handle(request("My delivery is late and I need expedited shipping."), auth=type("Auth", (), {"business_id": "business-1"})())
+    second = agent.handle(request("My delivery is late."), auth=auth())
     assert second.memories_used
-    assert "expedited" in client.responses.inputs[-1].lower()
+    assert "Maya prefers expedited handling" in client.responses.inputs[-1]
     assert second.reply == "Personalized response"
 
-    same_customer = memory.search("business-1", "customer-1", "expedited shipping")
+    same_customer = memory.search("business-1", "customer-1", "late deliveries")
     assert same_customer.available
     assert same_customer.memories
 
-    other_customer = memory.search("business-1", "customer-2", "expedited shipping")
+    other_customer = memory.search("business-1", "customer-2", "late deliveries")
     assert other_customer.available
     assert other_customer.memories == []
