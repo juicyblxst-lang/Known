@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 from app.memory import SibylMemory
 from app.models import SupportRequest
@@ -16,7 +17,16 @@ class FakeResponses:
 
     def create(self, *, model, instructions, input):
         self.inputs.append(input)
-        return FakeResponse("Personalized response" if "Maya prefers expedited handling" in input else "Generic response")
+        personalized = "Maya prefers expedited handling" in input
+        decision = {
+            "reply": "Personalized response" if personalized else "Generic response",
+            "recommendation": "Prioritize expedited handling" if personalized else None,
+            "action": "none",
+            "memory_influence": "The customer's stored preference changes the delivery recommendation." if personalized else "No relevant memory found",
+            "should_remember": "Maya prefers expedited handling for late deliveries" if personalized else None,
+            "memory_type": "customer_preference" if personalized else "none",
+        }
+        return FakeResponse(json.dumps(decision))
 
 
 class FakeClient:
