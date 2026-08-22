@@ -1,20 +1,248 @@
 import { getSession, signOut } from "./auth.js";
+
 const API = window.KNOWN_API_URL || "";
-let session = null; let sessionId = null; let selectedCustomer = null; let selectedOrders = [];
-const messages=document.querySelector("#messages"), form=document.querySelector("#composer"), input=document.querySelector("#message"), sessionLabel=document.querySelector("#session"), customerName=document.querySelector("header h1"), customerMeta=document.querySelector("header p"), customerPanel=document.querySelector(".context");
-function apiUrl(path){return `${API}${path}`}
-function addMessage(label,text,className){const el=document.createElement("div");el.className=`msg ${className}`;const small=document.createElement("small");small.textContent=label;const p=document.createElement("p");p.textContent=text;el.append(small,p);messages.appendChild(el);messages.scrollTop=messages.scrollHeight}
-function renderConversation(items){messages.innerHTML="";for(const item of items||[])addMessage(item.role==="assistant"?"KNOWN":selectedCustomer.name.toUpperCase(),item.content,item.role==="assistant"?"agent-msg":"customer-msg")}
-function renderCustomers(customers){document.querySelectorAll(".customer").forEach(n=>n.remove());const label=document.querySelector(".label");customers.forEach(customer=>{const button=document.createElement("button");button.className="customer";button.dataset.customerId=customer.id;const initial=document.createElement("span");initial.textContent=customer.name.charAt(0).toUpperCase();const info=document.createElement("div");const strong=document.createElement("strong");strong.textContent=customer.name;const small=document.createElement("small");small.textContent=`${customer.tier} · ${customer.email}`;info.append(strong,small);button.append(initial,info);button.addEventListener("click",()=>selectCustomer(customer));label.after(button)})}
-function renderWorkspace(data){selectedCustomer=data.customer;selectedOrders=data.orders||[];customerName.textContent=data.customer?.name||"Customer";customerMeta.textContent=data.customer?`${data.customer.tier} · ${data.customer.email}`:"Customer not found";const details=customerPanel.querySelector("section:first-child .context-body");if(details&&data.customer){details.querySelector("h2").textContent=data.customer.name;details.querySelector("p").textContent=`${data.customer.tier} customer`;details.querySelector("dd").textContent=data.customer.email;details.querySelectorAll("dd")[1].textContent=data.customer.id}const orderBody=customerPanel.querySelector("section:nth-child(2) .context-body");orderBody.innerHTML="";selectedOrders.forEach(order=>{const row=document.createElement("div");row.className="order";const id=document.createElement("b");id.textContent=order.id;const status=document.createElement("span");status.className=`status ${order.status==="delivered"?"delivered":"delayed"}`;status.textContent=order.status;const meta=document.createElement("small");meta.textContent=`$${Number(order.total).toFixed(2)} · ${(order.items||[]).join(", ")}`;row.append(id,status,meta);orderBody.appendChild(row)});const memoryBody=customerPanel.querySelector(".memory-panel .context-body");memoryBody.querySelectorAll("article").forEach(n=>n.remove());const memories=data.memory||[];memories.slice(0,8).forEach(memory=>{const article=document.createElement("article"),label=document.createElement("label"),text=document.createElement("p");label.textContent=memory.type||"MEMORY";text.textContent=memory.content||"";article.append(label,text);memoryBody.insertBefore(article,memoryBody.querySelector(".source"))});customerPanel.querySelector(".memory-count").textContent=String(memories.length)}
-async function authenticatedFetch(path,options={}){let response=await fetch(apiUrl(path),{...options,headers:{...(options.headers||{}),Authorization:`Bearer ${session.accessToken}`}});if(response.status!==401)return response;session=await getSession();if(!session){await signOut();location.href="./login.html";return null}return fetch(apiUrl(path),{...options,headers:{...(options.headers||{}),Authorization:`Bearer ${session.accessToken}`}})}
-async function loadConversation(customer,newSession=false){if(newSession){sessionId=null;renderConversation([]);sessionLabel.textContent="New session";return}const id=sessionId||localStorage.getItem(`known.session.${customer.id}`);if(!id){sessionLabel.textContent="No conversation yet";renderConversation([]);return}const response=await authenticatedFetch(`/api/sessions/${encodeURIComponent(id)}?customer_id=${encodeURIComponent(customer.id)}`);if(!response)return;if(!response.ok)throw new Error(`Unable to load conversation (${response.status})`);const data=await response.json();sessionId=data.session_id;localStorage.setItem(`known.session.${customer.id}`,sessionId);renderConversation(data.messages||[]);sessionLabel.textContent=`Session: ${data.persistence}`}
-async function loadWorkspace(customer){const response=await authenticatedFetch(`/api/workspace/${encodeURIComponent(customer.id)}`);if(!response)return;if(!response.ok)throw new Error(`Unable to load customer workspace (${response.status})`);const data=await response.json();renderWorkspace(data);document.querySelectorAll(".customer").forEach(n=>n.classList.toggle("active",n.dataset.customerId===customer.id));input.placeholder=`Reply to ${customer.name.split(" ")[0]}…`;await loadConversation(customer)}
-async function selectCustomer(customer){try{await loadWorkspace(customer)}catch(error){addMessage("SYSTEM",error.message||"Unable to load customer.","agent-msg")}}
-async function loadCustomers(){const response=await authenticatedFetch("/api/customers");if(!response)return;if(!response.ok)throw new Error(`Unable to load customers (${response.status})`);const customers=await response.json();renderCustomers(customers);if(!customers.length){messages.innerHTML="";addMessage("SYSTEM","No customers are available for this business.","agent-msg");return}await loadWorkspace(customers[0])}
-async function executeAction(action,orderId){const response=await authenticatedFetch("/api/actions",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action,order_id:orderId,customer_id:selectedCustomer.id})});if(!response)return;const data=await response.json();if(!response.ok)throw new Error(data.detail||`Action failed (${response.status})`);addMessage("KNOWN ACTION",`${action.replaceAll("_"," ")} completed for ${data.order.id}. Status: ${data.order.status}.`,"agent-msg");if(!data.memory_written)addMessage("SYSTEM","The backend action succeeded, but Sibyl did not confirm event persistence.","agent-msg");await loadWorkspace(selectedCustomer)}
-function showAction(result){if(!result.recommended_action||!selectedOrders.length)return;const text=result.recommended_action.toLowerCase();let action=null;if(text.includes("refund"))action="mark_refund_requested";else if(text.includes("return"))action="mark_return_requested";else if(text.includes("cancel"))action="cancel_order";if(!action)return;const order=selectedOrders.find(item=>!["cancelled","refunded"].includes(item.status))||selectedOrders[0];const button=document.createElement("button");button.type="button";button.className="auth-control";button.textContent=`Confirm: ${action.replaceAll("_"," ")} ${order.id}`;button.addEventListener("click",async()=>{button.disabled=true;try{await executeAction(action,order.id);button.remove()}catch(error){addMessage("SYSTEM",error.message||"Action failed.","agent-msg");button.disabled=false}});document.querySelector("header").appendChild(button)}
-form.addEventListener("submit",async event=>{event.preventDefault();if(!selectedCustomer)return;const message=input.value.trim();if(!message)return;input.value="";addMessage(`${selectedCustomer.name.toUpperCase()} · NOW`,message,"customer-msg");const button=form.querySelector("button");button.disabled=true;button.textContent="…";try{const response=await authenticatedFetch("/api/support",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({customer_id:selectedCustomer.id,message,conversation_id:sessionId})});if(!response)return;if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.detail||`Support request failed (${response.status})`)}const data=await response.json();sessionId=data.session_id;localStorage.setItem(`known.session.${selectedCustomer.id}`,sessionId);sessionLabel.textContent=`Session: ${data.persistence}`;renderConversation(data.conversation||[]);showAction(data)}catch(error){addMessage("SYSTEM",error.message||"Unable to reach Known.","agent-msg")}finally{button.disabled=false;button.textContent="Send";input.focus()}});
-const newSession=document.createElement("button");newSession.type="button";newSession.className="auth-control";newSession.textContent="New conversation";newSession.addEventListener("click",()=>loadConversation(selectedCustomer,true));document.querySelector("header").appendChild(newSession);
-const logout=document.createElement("button");logout.textContent="Sign out";logout.type="button";logout.className="auth-control";logout.addEventListener("click",async()=>{await signOut();location.href="./login.html"});document.querySelector("header").appendChild(logout);
-(async function bootstrap(){try{session=await getSession();if(!session){location.href="./login.html";return}await loadCustomers()}catch(error){addMessage("SYSTEM",error.message||"Unable to initialize Known.","agent-msg")}})();
+let session = null;
+let sessionId = null;
+let selectedCustomer = null;
+let selectedOrders = [];
+
+const $ = (selector) => document.querySelector(selector);
+const messages = $("#messages");
+const form = $("#composer");
+const input = $("#message");
+
+function apiUrl(path) { return `${API}${path}`; }
+
+function addMessage(label, text, className) {
+  const el = document.createElement("div");
+  el.className = `msg ${className}`;
+  const small = document.createElement("small");
+  small.textContent = label;
+  const p = document.createElement("p");
+  p.textContent = text;
+  el.append(small, p);
+  messages.appendChild(el);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function emptyState(text) {
+  messages.innerHTML = "";
+  const el = document.createElement("div");
+  el.className = "empty-state";
+  el.textContent = text;
+  messages.appendChild(el);
+}
+
+function renderConversation(items) {
+  messages.innerHTML = "";
+  if (!items?.length) return emptyState("No messages in this conversation yet.");
+  for (const item of items) addMessage(item.role === "assistant" ? "KNOWN" : (selectedCustomer?.name || "CUSTOMER").toUpperCase(), item.content, item.role === "assistant" ? "agent-msg" : "customer-msg");
+}
+
+function renderCustomers(customers) {
+  const list = $("#customer-list");
+  list.innerHTML = "";
+  if (!customers.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "No customers imported yet.";
+    list.appendChild(empty);
+    return;
+  }
+  for (const customer of customers) {
+    const button = document.createElement("button");
+    button.className = "customer";
+    button.dataset.customerId = customer.id;
+    const initial = document.createElement("span");
+    initial.textContent = (customer.name || "C").charAt(0).toUpperCase();
+    const info = document.createElement("div");
+    const strong = document.createElement("strong");
+    strong.textContent = customer.name;
+    const small = document.createElement("small");
+    small.textContent = `${customer.tier || "standard"} · ${customer.email || "No email"}`;
+    info.append(strong, small);
+    button.append(initial, info);
+    button.addEventListener("click", () => selectCustomer(customer));
+    list.appendChild(button);
+  }
+}
+
+function renderWorkspace(data) {
+  selectedCustomer = data.customer;
+  selectedOrders = data.orders || [];
+  $("#customer-detail-name").textContent = data.customer.name;
+  $("#customer-detail-tier").textContent = `${data.customer.tier || "standard"} customer`;
+  $("#customer-detail-email").textContent = data.customer.email || "No email";
+  $("#customer-detail-id").textContent = data.customer.id;
+
+  const orderBody = $("#orders");
+  orderBody.innerHTML = "";
+  if (!selectedOrders.length) {
+    orderBody.innerHTML = '<div class="empty-state">No orders found for this customer.</div>';
+  } else {
+    for (const order of selectedOrders) {
+      const row = document.createElement("div");
+      row.className = "order";
+      const id = document.createElement("b");
+      id.textContent = order.id;
+      const status = document.createElement("span");
+      status.className = `status ${order.status === "delivered" ? "delivered" : "delayed"}`;
+      status.textContent = order.status;
+      const meta = document.createElement("small");
+      meta.textContent = `$${Number(order.total || 0).toFixed(2)} · ${(order.items || []).join(", ") || "No line items"}`;
+      row.append(id, status, meta);
+      orderBody.appendChild(row);
+    }
+  }
+
+  const memoryBody = $("#memory");
+  memoryBody.innerHTML = "";
+  const memories = data.memory || [];
+  if (!memories.length) {
+    memoryBody.innerHTML = '<div class="empty-state">No relevant memory found.</div>';
+  } else {
+    for (const memory of memories.slice(0, 8)) {
+      const article = document.createElement("article");
+      const label = document.createElement("label");
+      label.textContent = memory.type || "MEMORY";
+      const text = document.createElement("p");
+      text.textContent = memory.content || "";
+      article.append(label, text);
+      memoryBody.appendChild(article);
+    }
+  }
+  const source = document.createElement("small");
+  source.className = "source";
+  source.textContent = data.memory_available ? "Retrieved from Sibyl Memory" : "Sibyl Memory unavailable";
+  memoryBody.appendChild(source);
+  $(".memory-count").textContent = String(memories.length);
+  $("#workspace").hidden = false;
+  $("#onboarding").hidden = true;
+  $("header h1").textContent = data.customer.name;
+  $("#header-meta").textContent = `${data.customer.tier || "standard"} · ${data.customer.email || "No email"}`;
+  input.placeholder = `Reply to ${data.customer.name.split(" ")[0]}…`;
+}
+
+async function authenticatedFetch(path, options = {}) {
+  if (!session) return null;
+  let response = await fetch(apiUrl(path), { ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${session.accessToken}` } });
+  if (response.status !== 401) return response;
+  session = await getSession();
+  if (!session) { await signOut(); location.href = "./login.html"; return null; }
+  return fetch(apiUrl(path), { ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${session.accessToken}` } });
+}
+
+async function loadConversation(customer, newSession = false) {
+  if (newSession) { sessionId = null; renderConversation([]); $("#session").textContent = "New conversation"; return; }
+  const id = sessionId || localStorage.getItem(`known.session.${customer.id}`);
+  if (!id) { sessionId = null; renderConversation([]); $("#session").textContent = "No conversation yet"; return; }
+  const response = await authenticatedFetch(`/api/sessions/${encodeURIComponent(id)}?customer_id=${encodeURIComponent(customer.id)}`);
+  if (!response) return;
+  if (response.status === 404) { localStorage.removeItem(`known.session.${customer.id}`); sessionId = null; renderConversation([]); $("#session").textContent = "No conversation yet"; return; }
+  if (!response.ok) throw new Error(`Unable to load conversation (${response.status})`);
+  const data = await response.json();
+  sessionId = data.session_id;
+  localStorage.setItem(`known.session.${customer.id}`, sessionId);
+  renderConversation(data.messages || []);
+  $("#session").textContent = `Persistent · ${data.updated_at}`;
+}
+
+async function loadWorkspace(customer) {
+  const response = await authenticatedFetch(`/api/workspace/${encodeURIComponent(customer.id)}`);
+  if (!response) return;
+  if (!response.ok) throw new Error(`Unable to load customer (${response.status})`);
+  const data = await response.json();
+  renderWorkspace(data);
+  document.querySelectorAll(".customer").forEach((node) => node.classList.toggle("active", node.dataset.customerId === customer.id));
+  await loadConversation(customer);
+}
+
+async function selectCustomer(customer) {
+  try { await loadWorkspace(customer); } catch (error) { emptyState(error.message || "Unable to load customer."); }
+}
+
+async function loadCustomers() {
+  const response = await authenticatedFetch("/api/customers");
+  if (!response) return;
+  if (!response.ok) throw new Error(`Unable to load customers (${response.status})`);
+  const customers = await response.json();
+  renderCustomers(customers);
+  if (!customers.length) {
+    $("#workspace").hidden = true;
+    $("#onboarding").hidden = false;
+    return;
+  }
+  await loadWorkspace(customers[0]);
+}
+
+async function loadShopifyStatus() {
+  const response = await authenticatedFetch("/api/shopify/status");
+  if (!response) return false;
+  if (!response.ok) throw new Error("Unable to check Shopify connection.");
+  const data = await response.json();
+  if (data.connected) {
+    $("#connection-status").textContent = `Connected · ${data.installation.shop_name || data.installation.shop_domain}`;
+    $("#onboarding").hidden = true;
+    await loadCustomers();
+    return true;
+  }
+  $("#connection-status").textContent = "Not connected";
+  $("#onboarding").hidden = false;
+  return false;
+}
+
+$("#shopify-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector("button");
+  const status = $("#shopify-status");
+  button.disabled = true;
+  status.textContent = "Starting Shopify authorization…";
+  try {
+    const response = await authenticatedFetch("/api/shopify/connect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shop_domain: $("#shop-domain").value }) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "Unable to connect Shopify.");
+    location.href = data.authorization_url;
+  } catch (error) {
+    status.textContent = error.message || "Unable to connect Shopify.";
+    button.disabled = false;
+  }
+});
+
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!selectedCustomer) return;
+  const message = input.value.trim();
+  if (!message) return;
+  input.value = "";
+  addMessage(`${selectedCustomer.name.toUpperCase()} · NOW`, message, "customer-msg");
+  const button = form.querySelector("button");
+  button.disabled = true;
+  button.textContent = "…";
+  try {
+    const response = await authenticatedFetch("/api/support", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ customer_id: selectedCustomer.id, message, conversation_id: sessionId }) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || `Support request failed (${response.status})`);
+    sessionId = data.session_id;
+    localStorage.setItem(`known.session.${selectedCustomer.id}`, sessionId);
+    $("#session").textContent = `Persistent · ${data.persistence}`;
+    renderConversation(data.conversation || []);
+  } catch (error) {
+    addMessage("SYSTEM", error.message || "Unable to reach Known.", "agent-msg");
+  } finally {
+    button.disabled = false;
+    button.textContent = "Send";
+    input.focus();
+  }
+});
+
+(async function bootstrap() {
+  try {
+    session = await getSession();
+    if (!session) { location.href = "./login.html"; return; }
+    const params = new URLSearchParams(location.search);
+    if (params.get("shopify") === "error") $("#shopify-status").textContent = "Shopify connection failed. Check the app configuration and try again.";
+    await loadShopifyStatus();
+  } catch (error) {
+    emptyState(error.message || "Unable to initialize Known.");
+  }
+})();
