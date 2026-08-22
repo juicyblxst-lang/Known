@@ -58,8 +58,7 @@ def _db_get(table: str, params: dict[str, str]) -> list[dict[str, Any]]:
 def _db_write(table: str, payload: dict[str, Any], *, conflict: str | None = None) -> dict[str, Any] | None:
     url, headers = _supabase()
     headers = {**headers, "Prefer": "resolution=merge-duplicates,return=representation" if conflict else "return=representation"}
-    params = {"on_conflict": conflict} if conflict else {}
-    response = httpx.post(f"{url}/rest/v1/{table}", params=params, headers=headers, json=payload, timeout=10)
+    response = httpx.post(f"{url}/rest/v1/{table}", params={"on_conflict": conflict} if conflict else {}, headers=headers, json=payload, timeout=10)
     response.raise_for_status()
     rows = response.json()
     return rows[0] if rows else None
@@ -81,11 +80,19 @@ def consume_oauth_state(nonce: str, shop_domain: str) -> dict[str, Any]:
     if not rows:
         raise ValueError("Invalid or already-used Shopify OAuth state")
     state = rows[0]
-    expires = datetime.fromisoformat(state["expires_at"].replace("Z", "+00:00"))
-    if expires <= utcnow():
+    if datetime.fromisoformat(state["expires_at"].replace("Z", "+00:00")) <= utcnow():
         raise ValueError("Shopify OAuth state expired")
     _db_patch("shopify_oauth_states", {"nonce": f"eq.{nonce}"}, {"used_at": utcnow().isoformat()})
     return state
+
+def verify_oauth_hmac(params: dict[str, str]) -> bool:
+    secret = os.getenv("SHOPIFY_CLIENT_SECRET", "")
+    supplied = params.get("hmac")
+    if not secret or not supplied:
+        return False
+    message = "&".join(f"{key}={params[key]}" for key in sorted(params) if key != "hmac")
+    digest = hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(digest, supplied)
 
 def authorization_url(shop_domain: str, state: str) -> str:
     client_id = os.getenv("SHOPIFY_CLIENT_ID", "")
@@ -185,4 +192,8 @@ def webhook_seen(webhook_id: str, shop_domain: str, topic: str) -> bool:
 
 def installation(business_id: str) -> dict[str, Any] | None:
     rows = _db_get("shopify_installations", {"business_id": f"eq.{business_id}", "select": "shop_domain,shop_name,scopes,installed_at,last_synced_at,sync_status,sync_error", "limit": "1"})
+    return rows[0] if rows else None
+
+def installation_by_shop(shop_domain: str) -> dict[str, Any] | None:
+    rows = _db_get("shopify_installations", {"shop_domain": f"eq.{shop_domain}", "limit": "1"})
     return rows[0] if rows else None
