@@ -52,6 +52,10 @@ class KnownAgent:
     def handle(self, request: SupportRequest, auth: AuthContext | None = None) -> SupportResponse:
         business_id = auth.business_id if auth else os.getenv("KNOWN_LOCAL_BUSINESS_ID", "local-development")
         retrieved = self._search_memory(business_id, request.customer.id, request.message)
+        # Sibyl is the defining product capability. If its memory layer is unavailable,
+        # Known must not silently fall back to generic AI support and claim to be working.
+        if not retrieved.available:
+            raise RuntimeError("Sibyl Memory is unavailable; Known cannot provide memory-dependent support")
         memories = retrieved.memories
         action = self._action(request, memories)
         if not self.client:
@@ -62,7 +66,7 @@ Use relevant durable customer memory as decision-making context, not merely as a
 Never invent customer history. Give a concise, empathetic answer. Treat order data as current facts and memory as historical context.
 If memory establishes a relevant preference or prior support pattern, adapt the proposed resolution to it.
 Never claim an operational action has happened unless the backend has actually executed it.
-If retrieved memory is empty or unavailable, do not invent historical customer context."""
+If no relevant memory exists, answer from current verified customer/order context without fabricating history."""
         context = {
             "customer": request.customer.model_dump(),
             "orders": [o.model_dump() for o in request.orders],
@@ -90,7 +94,7 @@ If retrieved memory is empty or unavailable, do not invent historical customer c
             memories_used=memories,
             memory_written=memory_written,
             recommended_action=action,
-            degraded_memory=not retrieved.available,
+            degraded_memory=False,
         )
 
     @staticmethod
