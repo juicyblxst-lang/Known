@@ -1,0 +1,52 @@
+services:
+  - type: web
+    name: known
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: "8000"
+      - key: SIBYL_MEMORY_DB
+        value: /data/sibyl/memory.db
+      - key: KNOWN_PUBLIC_URL
+        sync: false
+      - key: KNOWN_CORS_ORIGINS
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-5-mini
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: KNOWN_BUSINESS_ID
+        sync: false
+      - key: SIBYL_ACCOUNT_ID
+        sync: false
+      - key: SIBYL_SESSION_TOKEN
+        sync: false
+      - key: SIBYL_TIER
+        value: free
+      - key: SHOPIFY_CLIENT_ID
+        sync: false
+      - key: SHOPIFY_CLIENT_SECRET
+        sync: false
+      - key: SHOPIFY_REDIRECT_URI
+        sync: false
+      - key: SHOPIFY_WEBHOOK_URL
+        sync: false
+      - key: SHOPIFY_SCOPES
+        value: read_customers,read_orders
+      - key: SHOPIFY_API_VERSION
+        value: 2026-07
+      - key: SHOPIFY_TOKEN_ENCRYPTION_KEY
+        sync: false
+    disk:
+      name: known-sibyl
+      mountPath: /data/sibyl
+      sizeGB: 1
