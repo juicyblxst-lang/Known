@@ -19,7 +19,7 @@ from .supabase_sessions import SupabaseSessionStore
 app = FastAPI(title="Known", version="0.5.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[x.strip() for x in os.getenv("KNOWN_CORS_ORIGINS", "http://localhost:8000").split(",") if x.strip()],
+    allow_origins=[x.strip() for x in os.getenv("KNOWN_CORS_ORIGINS", "http://localhost:8000").split(",")],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -52,6 +52,7 @@ def ready() -> dict[str, object]:
         "frontend": (Path(__file__).resolve().parents[2] / "frontend").exists(),
         "supabase": durable_sessions.configured,
         "openai": bool(os.getenv("OPENAI_API_KEY")),
+        "sibyl": agent.memory.configured,
     }
     return {"status": "ready" if all(checks.values()) else "degraded", "checks": checks}
 
@@ -92,7 +93,7 @@ async def support(
     session.messages.append(user_message)
 
     try:
-        result = agent.handle(agent_request)
+        result = agent.handle(agent_request, auth=auth)
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Agent service unavailable") from exc
 
