@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
@@ -58,6 +59,8 @@ async def support(
             session = durable_sessions.get_or_create(resolved_session_id, request.customer.id, auth.business_id)
         except ValueError as exc:
             raise HTTPException(status_code=403, detail="session does not belong to customer") from exc
+        except (httpx.HTTPError, ValueError) as exc:
+            raise HTTPException(status_code=502, detail="Conversation persistence service unavailable") from exc
         append = lambda message: durable_sessions.append(resolved_session_id, message)
         persistence = "supabase"
     else:
@@ -72,11 +75,22 @@ async def support(
     agent_request = request.model_copy(update={"conversation": conversation})
 
     user_message = Message(role="user", content=request.message)
-    append(user_message)
+    try:
+        append(user_message)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Conversation persistence service unavailable") from exc
     session.messages.append(user_message)
-    result = agent.handle(agent_request)
+
+    try:
+        result = agent.handle(agent_request)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Agent service unavailable") from exc
+
     assistant_message = Message(role="assistant", content=result.reply)
-    append(assistant_message)
+    try:
+        append(assistant_message)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Conversation persistence service unavailable") from exc
     session.messages.append(assistant_message)
 
     return SupportSessionResponse(
@@ -97,9 +111,6 @@ def get_session(session_id: str) -> dict:
     return session.__dict__
 
 
-# The frontend directory is the single canonical Known product UI.
-# It is served by FastAPI so local deployments and the backend service expose
-# the same authenticated workspace instead of the previous hard-coded demo page.
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 
 if FRONTEND_DIR.exists():
