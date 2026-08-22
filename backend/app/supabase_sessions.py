@@ -10,11 +10,7 @@ from .session_store import ConversationSession
 
 
 class SupabaseSessionStore:
-    """Durable conversation store backed by the existing Supabase schema.
-
-    When Supabase is not configured, callers can continue using the local
-    development store. No fake persistence is created here.
-    """
+    """Durable conversation store backed by the existing Supabase schema."""
 
     def __init__(self) -> None:
         self.url = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -36,20 +32,39 @@ class SupabaseSessionStore:
         data = response.json()
         return data if isinstance(data, list) else []
 
+    def get(self, session_id: str, customer_id: str, business_id: str) -> ConversationSession | None:
+        rows = self._request("GET", "conversations", params={
+            "id": f"eq.{session_id}",
+            "customer_id": f"eq.{customer_id}",
+            "business_id": f"eq.{business_id}",
+            "select": "id,customer_id,created_at,updated_at",
+            "limit": "1",
+        })
+        if not rows:
+            return None
+        row = rows[0]
+        messages = self._request("GET", "conversation_messages", params={
+            "conversation_id": f"eq.{session_id}",
+            "select": "role,content,created_at",
+            "order": "created_at.asc",
+        })
+        return ConversationSession(
+            id=row["id"],
+            customer_id=row["customer_id"],
+            messages=[Message(role=m["role"], content=m["content"]) for m in messages],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
     def get_or_create(self, session_id: str, customer_id: str, business_id: str) -> ConversationSession:
-        rows = self._request("GET", "conversations", params={"id": f"eq.{session_id}", "select": "id,customer_id,created_at,updated_at", "limit": "1"})
-        if rows:
-            row = rows[0]
-            if row["customer_id"] != customer_id:
-                raise ValueError("session does not belong to customer")
-            messages = self._request("GET", "conversation_messages", params={"conversation_id": f"eq.{session_id}", "select": "role,content,created_at", "order": "created_at.asc"})
-            return ConversationSession(
-                id=row["id"],
-                customer_id=row["customer_id"],
-                messages=[Message(role=m["role"], content=m["content"]) for m in messages],
-                created_at=row["created_at"],
-                updated_at=row["updated_at"],
-            )
+        existing = self.get(session_id, customer_id, business_id)
+        if existing is not None:
+            return existing
+        # Check an existing ID independently so a session belonging to another
+        # customer or tenant cannot be silently reused.
+        rows = self._request("GET", "conversations", params={"id": f"eq.{session_id}", "select": "id,customer_id,business_id", "limit": "1"})
+        if rows and (rows[0]["customer_id"] != customer_id or str(rows[0]["business_id"]) != str(business_id)):
+            raise ValueError("session does not belong to customer")
         self._request("POST", "conversations", json={"id": session_id, "business_id": business_id, "customer_id": customer_id})
         return ConversationSession(id=session_id, customer_id=customer_id)
 
