@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import os
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
 
 from .agent import KnownAgent
 from .api import router
+from .auth import AuthContext, require_auth
 from .models import Message, SupportRequest, SupportResponse
 from .session_store import InMemorySessionStore
 from .supabase_sessions import SupabaseSessionStore
 
-app = FastAPI(title="Known", version="0.4.0")
+app = FastAPI(title="Known", version="0.5.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[x.strip() for x in os.getenv("KNOWN_CORS_ORIGINS", "http://localhost:8000").split(",")],
@@ -35,18 +35,25 @@ class SupportSessionResponse(SupportResponse):
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "known", "version": "0.4.0", "conversation_persistence": "supabase" if durable_sessions.configured else "local-development"}
+    return {
+        "status": "ok",
+        "service": "known",
+        "version": "0.5.0",
+        "conversation_persistence": "supabase" if durable_sessions.configured else "local-development",
+    }
 
 
 @app.post("/api/support", response_model=SupportSessionResponse)
-def support(request: SupportRequest, session_id: str | None = None) -> SupportSessionResponse:
+async def support(
+    request: SupportRequest,
+    session_id: str | None = None,
+    auth: AuthContext = Depends(require_auth),
+) -> SupportSessionResponse:
     resolved_session_id = session_id or f"{request.customer.id}:default"
+
     if durable_sessions.configured:
-        business_id = os.getenv("KNOWN_BUSINESS_ID")
-        if not business_id:
-            raise HTTPException(status_code=500, detail="KNOWN_BUSINESS_ID is required when Supabase is configured")
         try:
-            session = durable_sessions.get_or_create(resolved_session_id, request.customer.id, business_id)
+            session = durable_sessions.get_or_create(resolved_session_id, request.customer.id, auth.business_id)
         except ValueError as exc:
             raise HTTPException(status_code=403, detail="session does not belong to customer") from exc
         append = lambda message: durable_sessions.append(resolved_session_id, message)
@@ -70,7 +77,12 @@ def support(request: SupportRequest, session_id: str | None = None) -> SupportSe
     append(assistant_message)
     session.messages.append(assistant_message)
 
-    return SupportSessionResponse(**result.model_dump(), session_id=resolved_session_id, conversation=list(session.messages), persistence=persistence)
+    return SupportSessionResponse(
+        **result.model_dump(),
+        session_id=resolved_session_id,
+        conversation=list(session.messages),
+        persistence=persistence,
+    )
 
 
 @app.get("/api/sessions/{session_id}")
