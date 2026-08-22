@@ -17,14 +17,17 @@ class KnownAgent:
     def _search_memory(self, business_id: str, customer_id: str, query: str) -> MemoryResult:
         if isinstance(self.memory, SibylMemory):
             return self.memory.search(business_id, customer_id, query)
-        # Keep existing unit-test/demo memory providers usable while production
-        # uses the official Sibyl SDK adapter above.
         return self.memory.search(customer_id, query)
 
     def _remember(self, business_id: str, customer_id: str, content: str, memory_type: str) -> tuple[bool, str]:
         if isinstance(self.memory, SibylMemory):
             return self.memory.remember(business_id, customer_id, content, memory_type)
         return self.memory.remember(customer_id, content, memory_type)
+
+    def _record_event(self, business_id: str, customer_id: str, kind: str, body: dict) -> tuple[bool, str]:
+        if isinstance(self.memory, SibylMemory):
+            return self.memory.record_event(business_id, customer_id, kind, body)
+        return True, ""
 
     def handle(self, request: SupportRequest, auth: AuthContext | None = None) -> SupportResponse:
         business_id = auth.business_id if auth else os.getenv("KNOWN_LOCAL_BUSINESS_ID", "local-development")
@@ -35,8 +38,8 @@ class KnownAgent:
         system = """You are Known, a customer-support agent for a small e-commerce business.
 Use relevant durable customer memory as decision-making context, not merely as a citation.
 Never invent customer history. Give a concise, empathetic answer. Treat order data as current
-facts and memory as historical context. If memory establishes a relevant preference or prior
-support pattern, adapt the proposed resolution to it."""
+facts and memory as historical context. If memory establishes a relevant preference or prior support pattern, adapt the proposed resolution to it.
+Never claim an operational action has happened unless the backend has actually executed it."""
         context = {
             "customer": request.customer.model_dump(),
             "orders": [o.model_dump() for o in request.orders],
@@ -58,6 +61,14 @@ support pattern, adapt the proposed resolution to it."""
         if any(marker in lower for marker in preference_markers):
             ok, _ = self._remember(business_id, request.customer.id, request.message, "customer_preference")
             memory_written = ok
+
+        event_ok, _ = self._record_event(
+            business_id,
+            request.customer.id,
+            "support_message",
+            {"message": request.message, "recommended_action": action, "memory_used": len(memories)},
+        )
+        memory_written = memory_written or event_ok
 
         return SupportResponse(
             customer_id=request.customer.id,
