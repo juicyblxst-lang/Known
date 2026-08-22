@@ -13,6 +13,11 @@ store = StructuredStore()
 memory = SibylMemory()
 
 
+@router.get("/customers")
+async def get_customers(auth: AuthContext = Depends(require_auth)) -> list[dict]:
+    return store.customers(auth.business_id)
+
+
 @router.get("/workspace/{customer_id}", response_model=WorkspaceResponse)
 async def get_workspace(
     customer_id: str,
