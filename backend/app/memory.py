@@ -1,10 +1,20 @@
 from __future__ import annotations
 
-import json
+import hashlib
 import os
-import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+from sibyl_memory_client import MemoryClient
+from sibyl_memory_client.exceptions import (
+    CapExceededError,
+    NotFoundError,
+    SibylMemoryError,
+    TierGateError,
+    TierVerificationError,
+    ValidationError,
+)
 
 
 @dataclass
@@ -15,71 +25,138 @@ class MemoryResult:
 
 
 class SibylMemory:
-    """Thin adapter around the official Sibyl Memory CLI.
+    """Production adapter over the official Sibyl Memory SDK.
 
-    We intentionally keep the integration at a process boundary: the agent does
-    not implement a second memory system and does not silently substitute a
-    vector database when Sibyl is unavailable.
+    Known uses Sibyl's real SQLite + FTS5 engine, not a parallel memory store.
+    Each customer maps to a dedicated Sibyl tenant inside the shared database:
+    ``business_id:customer_id``. This keeps search and writes isolated while
+    retaining one local Sibyl database for the service.
     """
 
     def __init__(self) -> None:
-        self.command = os.getenv("SIBYL_COMMAND", "sibyl")
-        self.workspace = os.getenv("SIBYL_WORKSPACE") or None
+        configured = os.getenv("SIBYL_MEMORY_DB")
+        self.db_path = Path(configured or (Path("data") / "sibyl" / "memory.db")).expanduser()
+        self.account_id = os.getenv("SIBYL_ACCOUNT_ID") or None
+        self.session_token = os.getenv("SIBYL_SESSION_TOKEN") or None
+        self.tier = os.getenv("SIBYL_TIER", "free")
 
-    def _run(self, *args: str) -> tuple[bool, str]:
-        command = [self.command, *args]
-        env = os.environ.copy()
-        if self.workspace:
-            env["SIBYL_WORKSPACE"] = self.workspace
+    def _tenant_id(self, business_id: str, customer_id: str) -> str:
+        return f"{business_id}:{customer_id}"
+
+    def _client(self, business_id: str, customer_id: str) -> MemoryClient:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        return MemoryClient.local(
+            str(self.db_path),
+            tenant_id=self._tenant_id(business_id, customer_id),
+            account_id=self.account_id,
+            session_token=self.session_token,
+            tier=self.tier,
+        )
+
+    @staticmethod
+    def _close(client: MemoryClient) -> None:
         try:
-            proc = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=15,
-                env=env,
-                check=False,
+            getattr(client.storage, "close", lambda: None)()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _normalize_hit(hit: Any) -> dict[str, Any]:
+        if not isinstance(hit, dict):
+            return {"content": str(hit)}
+        body = hit.get("body")
+        content = hit.get("content")
+        if content is None:
+            if isinstance(body, dict):
+                content = body.get("content") or body.get("value") or str(body)
+            elif body is not None:
+                content = str(body)
+        normalized = dict(hit)
+        if content is not None:
+            normalized["content"] = str(content)
+        return normalized
+
+    @staticmethod
+    def _error_message(exc: Exception) -> str:
+        if isinstance(exc, CapExceededError):
+            return "Sibyl memory tier capacity exceeded"
+        if isinstance(exc, TierGateError):
+            return "Sibyl memory feature requires the configured tier"
+        if isinstance(exc, TierVerificationError):
+            return "Sibyl memory tier verification failed"
+        if isinstance(exc, ValidationError):
+            return f"Sibyl memory validation failed: {exc}"
+        if isinstance(exc, NotFoundError):
+            return "Sibyl memory entry not found"
+        if isinstance(exc, SibylMemoryError):
+            return str(exc)
+        return str(exc)
+
+    def search(
+        self,
+        business_id: str,
+        customer_id: str,
+        query: str,
+        limit: int = 8,
+    ) -> MemoryResult:
+        """Search the official Sibyl FTS5 engine within one customer tenant."""
+        if not query or len(query.strip()) < 3:
+            return MemoryResult([], True)
+
+        client = None
+        try:
+            client = self._client(business_id, customer_id)
+            results = client.search(query.strip(), limit=min(max(limit, 1), 50))
+            memories = [self._normalize_hit(hit) for hit in results]
+            return MemoryResult(memories, True)
+        except Exception as exc:
+            return MemoryResult([], False, self._error_message(exc))
+        finally:
+            if client is not None:
+                self._close(client)
+
+    def remember(
+        self,
+        business_id: str,
+        customer_id: str,
+        content: str,
+        memory_type: str = "customer_preference",
+    ) -> tuple[bool, str]:
+        """Persist a durable customer fact in Sibyl's WARM entity tier."""
+        client = None
+        try:
+            client = self._client(business_id, customer_id)
+            digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:24]
+            client.set_entity(
+                memory_type,
+                f"memory-{digest}",
+                {"content": content, "customer_id": customer_id, "type": memory_type},
             )
-        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-            return False, str(exc)
-        output = (proc.stdout or proc.stderr).strip()
-        return proc.returncode == 0, output
+            return True, ""
+        except Exception as exc:
+            return False, self._error_message(exc)
+        finally:
+            if client is not None:
+                self._close(client)
 
-    def search(self, customer_id: str, query: str, limit: int = 8) -> MemoryResult:
-        """Search customer-scoped durable memory.
-
-        Sibyl CLI versions may expose different output flags, so we first ask
-        for JSON and parse defensively. Unsupported output is reported instead
-        of being fabricated.
-        """
-        ok, output = self._run(
-            "search",
-            query,
-            "--customer-id",
-            customer_id,
-            "--limit",
-            str(limit),
-            "--json",
-        )
-        if not ok:
-            return MemoryResult([], False, output)
+    def record_event(
+        self,
+        business_id: str,
+        customer_id: str,
+        kind: str,
+        body: dict[str, Any],
+    ) -> tuple[bool, str]:
+        """Append a customer event to Sibyl's COLD journal tier."""
+        client = None
         try:
-            parsed = json.loads(output) if output else []
-        except json.JSONDecodeError:
-            return MemoryResult([], False, "Sibyl returned non-JSON output")
-        if isinstance(parsed, dict):
-            parsed = parsed.get("memories", parsed.get("results", []))
-        if not isinstance(parsed, list):
-            parsed = []
-        return MemoryResult([x if isinstance(x, dict) else {"content": str(x)} for x in parsed], True)
-
-    def remember(self, customer_id: str, content: str, memory_type: str = "fact") -> tuple[bool, str]:
-        """Persist a durable, customer-scoped memory in Sibyl."""
-        return self._run(
-            "remember",
-            content,
-            "--customer-id",
-            customer_id,
-            "--type",
-            memory_type,
-        )
+            client = self._client(business_id, customer_id)
+            event_id = client.write_event(
+                acted={"kind": kind, "body": body},
+                extra={"customer_id": customer_id},
+            )
+            return True, str(event_id)
+        except Exception as exc:
+            return False, self._error_message(exc)
+        finally:
+            if client is not None:
+                self._close(client)
