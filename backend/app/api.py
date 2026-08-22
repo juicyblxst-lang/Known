@@ -6,7 +6,6 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from .auth import AuthContext, require_auth
-from .demo import comparison
 from .memory import SibylMemory
 from .models import ActionRequest, ActionResponse
 from .store import StructuredStore
@@ -70,16 +69,11 @@ async def execute_action(request: ActionRequest, auth: AuthContext = Depends(req
 @router.get("/sessions/{session_id}")
 async def get_conversation_session(session_id: str, customer_id: str, auth: AuthContext = Depends(require_auth)) -> dict:
     if not sessions.configured:
-        return {"session_id": session_id, "customer_id": customer_id, "messages": [], "persistence": "local-development"}
+        raise HTTPException(status_code=503, detail="Durable conversation persistence is not configured")
     try:
         session = sessions.get(session_id, customer_id, auth.business_id)
     except (httpx.HTTPError, ValueError):
         raise upstream_error()
     if session is None:
-        return {"session_id": session_id, "customer_id": customer_id, "messages": [], "persistence": "supabase"}
+        raise HTTPException(status_code=404, detail="session not found")
     return {"session_id": session.id, "customer_id": session.customer_id, "messages": [message.model_dump() for message in session.messages], "created_at": session.created_at, "updated_at": session.updated_at, "persistence": "supabase"}
-
-
-@router.get("/demo/memory-comparison")
-def memory_comparison() -> dict:
-    return comparison()
