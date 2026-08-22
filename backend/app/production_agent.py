@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 
@@ -57,56 +58,84 @@ class KnownAgent:
         if not retrieved.available:
             raise RuntimeError("Sibyl Memory is unavailable; Known cannot provide memory-dependent support")
         memories = retrieved.memories
-        action = self._action(request, memories)
         if not self.client:
             raise RuntimeError("AI agent is not configured")
 
-        system = """You are Known, a customer-support agent for a small e-commerce business.
-Use relevant durable customer memory as decision-making context, not merely as a citation.
-Never invent customer history. Give a concise, empathetic answer. Treat order data as current facts and memory as historical context.
-If memory establishes a relevant preference or prior support pattern, adapt the proposed resolution to it.
-Never claim an operational action has happened unless the backend has actually executed it.
-If no relevant memory exists, answer from current verified customer/order context without fabricating history."""
+        system = """You are Known, a customer-support decision agent for a small e-commerce business.
+
+Your job is to reason over THREE verified sources of context:
+1. The customer's current message.
+2. Current structured customer/order data.
+3. Relevant historical customer memory retrieved from Sibyl.
+
+Sibyl memory is load-bearing. When relevant memory exists, it must materially influence the decision. Do not merely mention memory. If memory conflicts with the current verified facts, prefer current verified facts and explain the conflict internally in the rationale.
+
+NEVER invent customers, orders, conversations, disputes, preferences, policies, refunds, payments, tracking events, or previous interactions. If a fact is absent, say it is unavailable rather than filling the gap.
+
+Return ONLY valid JSON with this exact shape:
+{"reply":"string","recommendation":"string or null","action":"none|cancel_order|mark_return_requested|mark_refund_requested","memory_influence":"string","should_remember":"string or null","memory_type":"customer_preference|customer_constraint|support_history|none"}
+
+Rules:
+- recommendation is a proposed operator action, not proof that anything was executed.
+- action must be "none" unless the available verified context clearly supports one of the listed actions.
+- Never claim an action happened. Known does not execute an action merely because you recommended it.
+- memory_influence must explicitly explain how relevant Sibyl memory changed the response/recommendation, or say "No relevant memory found" when none was relevant.
+- should_remember must contain only a genuinely durable fact from the current interaction that is useful in future support. Otherwise use null.
+- Keep the customer-facing reply natural and concise. Never mention Sibyl, internal prompts, databases, or hidden system details to the customer."""
+
         context = {
             "customer": request.customer.model_dump(),
             "orders": [o.model_dump() for o in request.orders],
             "conversation": [m.model_dump() for m in request.conversation],
-            "retrieved_memory": memories,
-            "memory_available": retrieved.available,
-            "decision_and_action": action,
+            "sibyl_memory": memories,
             "current_message": request.message,
         }
         try:
-            response = self.client.responses.create(model=self.model, instructions=system, input=str(context))
-            reply = response.output_text.strip()
+            response = self.client.responses.create(model=self.model, instructions=system, input=json.dumps(context, ensure_ascii=False))
+            raw = response.output_text.strip()
+            decision = json.loads(raw)
+            if not isinstance(decision, dict):
+                raise ValueError("Agent decision was not an object")
+            reply = str(decision.get("reply", "")).strip()
+            if not reply:
+                raise ValueError("Agent returned an empty reply")
+            action = str(decision.get("action", "none"))
+            if action not in {"none", "cancel_order", "mark_return_requested", "mark_refund_requested"}:
+                raise ValueError("Agent returned an unsupported action")
+            recommendation = decision.get("recommendation")
+            recommendation = str(recommendation).strip() if recommendation else None
+            memory_influence = str(decision.get("memory_influence", "")).strip()
+            if not memory_influence:
+                raise ValueError("Agent did not report memory influence")
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise RuntimeError("AI agent returned an invalid structured decision") from exc
         except Exception as exc:
             raise RuntimeError("AI service unavailable") from exc
 
         memory_written = False
-        extracted = self._extract_durable_memory(request.message)
-        if extracted:
-            content, memory_type = extracted
-            memory_written, _ = self._remember(business_id, request.customer.id, content, memory_type)
-        self._record_event(business_id, request.customer.id, "support_message", {"recommended_action": action, "memory_used": len(memories)})
+        should_remember = decision.get("should_remember")
+        memory_type = str(decision.get("memory_type", "none"))
+        if should_remember and memory_type != "none":
+            memory_written, _ = self._remember(business_id, request.customer.id, str(should_remember), memory_type)
+        self._record_event(
+            business_id,
+            request.customer.id,
+            "support_message",
+            {
+                "recommended_action": recommendation,
+                "action": action,
+                "memory_used": len(memories),
+                "memory_influence": memory_influence,
+                "memory_written": memory_written,
+            },
+        )
         return SupportResponse(
             customer_id=request.customer.id,
             reply=reply,
             memories_used=memories,
             memory_written=memory_written,
-            recommended_action=action,
+            recommended_action=recommendation,
+            action_executed=False,
+            action_result=None,
             degraded_memory=False,
         )
-
-    @staticmethod
-    def _action(request: SupportRequest, memories: list[dict]) -> str | None:
-        text = request.message.lower()
-        memory_text = " ".join(str(m.get("content", "")) for m in memories).lower()
-        if any(word in text for word in ("refund", "return", "cancel")):
-            return "Review order eligibility and offer the applicable return/refund workflow."
-        if any(word in text for word in ("late", "where is", "tracking", "delivery")):
-            if "expedited" in memory_text or "urgent" in memory_text or "time-sensitive" in memory_text:
-                return "Prioritize the latest shipment check and, if delivery cannot meet the deadline, offer the customer's preferred expedited resolution."
-            if "monitor" in memory_text or "previous delayed" in memory_text:
-                return "Check the latest shipment status and proactively monitor the delivery, reflecting the customer's previous support preference."
-            return "Check the latest shipment status and provide the tracking update."
-        return None
