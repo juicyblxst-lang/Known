@@ -26,6 +26,13 @@ class Message(BaseModel):
 
 
 class SupportRequest(BaseModel):
+    """Browser input; authoritative customer/order data is resolved by FastAPI."""
+    customer_id: str
+    message: str = Field(min_length=1, max_length=12000)
+    conversation_id: str | None = None
+
+
+class SupportContextRequest(BaseModel):
     customer: Customer
     message: str
     conversation: list[Message] = Field(default_factory=list)
