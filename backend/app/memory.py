@@ -29,15 +29,32 @@ class SibylMemory:
 
     def __init__(self) -> None:
         configured = os.getenv("SIBYL_MEMORY_DB")
-        self.db_path = Path(configured or (Path("data") / "sibyl" / "memory.db")).expanduser()
+        default_path = Path("data") / "sibyl" / "memory.db"
+        self.db_path = Path(configured or default_path).expanduser()
         self.account_id = os.getenv("SIBYL_ACCOUNT_ID") or None
         self.session_token = os.getenv("SIBYL_SESSION_TOKEN") or None
         self.tier = os.getenv("SIBYL_TIER", "free")
 
     @property
     def configured(self) -> bool:
-        """Whether Known can initialize the real Sibyl SDK locally."""
-        return True
+        try:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            return self.db_path.parent.is_dir() and os.access(self.db_path.parent, os.W_OK)
+        except OSError:
+            return False
+
+    def health(self) -> dict[str, Any]:
+        if not self.configured:
+            return {"configured": False, "writable": False, "path": str(self.db_path), "error": "Sibyl memory path is not writable"}
+        client = None
+        try:
+            client = self._client("__health__", "__health__")
+            return {"configured": True, "writable": True, "path": str(self.db_path)}
+        except Exception as exc:
+            return {"configured": False, "writable": True, "path": str(self.db_path), "error": self._error_message(exc)}
+        finally:
+            if client is not None:
+                self._close(client)
 
     def _tenant_id(self, business_id: str, customer_id: str) -> str:
         return f"{business_id}:{customer_id}"
@@ -106,6 +123,8 @@ class SibylMemory:
                 self._close(client)
 
     def remember(self, business_id: str, customer_id: str, content: str, memory_type: str = "customer_preference") -> tuple[bool, str]:
+        if not content.strip():
+            return False, "Sibyl memory content is empty"
         client = None
         try:
             client = self._client(business_id, customer_id)
