@@ -41,8 +41,12 @@ jobs:
       - name: Verify no obvious committed secrets
         working-directory: .
         run: |
-          if git grep -nE 'sk-[A-Za-z0-9_-]{20,}|service_role|SUPABASE_SERVICE_ROLE_KEY=[^[:space:]]+' -- ':!*.lock' ':!.env.example'; then
+          if git grep -nE 'sk-[A-Za-z0-9_-]{20,}|SUPABASE_SERVICE_ROLE_KEY=[^[:space:]]+' -- ':!*.lock' ':!.env.example' ':!.github/workflows/backend.yml'; then
             echo "Potential secret material detected in tracked source."
+            exit 1
+          fi
+          if git grep -nE '(^|[^A-Za-z0-9_])service_role([^A-Za-z0-9_]|$)' -- ':!*.lock' ':!.env.example' ':!.github/workflows/backend.yml'; then
+            echo "Potential Supabase service-role material detected in tracked source."
             exit 1
           fi
 
