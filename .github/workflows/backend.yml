@@ -38,6 +38,23 @@ jobs:
             exit 1
           fi
 
+      - name: Verify no obvious committed secrets
+        working-directory: .
+        run: |
+          if git grep -nE 'sk-[A-Za-z0-9_-]{20,}|service_role|SUPABASE_SERVICE_ROLE_KEY=[^[:space:]]+' -- ':!*.lock' ':!.env.example'; then
+            echo "Potential secret material detected in tracked source."
+            exit 1
+          fi
+
+      - name: Verify environment contract
+        working-directory: .
+        run: |
+          test -f .env.example
+          grep -q '^OPENAI_API_KEY=' .env.example
+          grep -q '^SUPABASE_URL=' .env.example
+          grep -q '^SUPABASE_SERVICE_ROLE_KEY=' .env.example
+          grep -q '^SIBYL_MEMORY_DB=' .env.example
+
       - name: Compile backend
         run: python -m compileall -q app
 
@@ -53,6 +70,7 @@ jobs:
           test -f frontend/auth.js
           grep -q '/api/config' frontend/auth.js
           grep -q '/api/support' frontend/app.js
+          grep -q 'customer_id' frontend/app.js
 
       - name: Validate frontend JavaScript syntax
         run: |
@@ -83,16 +101,13 @@ jobs:
           done
 
           grep -q '"status":"ok"' /tmp/health.json
-
           curl --fail --silent http://127.0.0.1:8000/ > /tmp/index.html
           grep -q '<html' /tmp/index.html
-
           curl --fail --silent http://127.0.0.1:8000/login.html > /tmp/login.html
           grep -q '<form' /tmp/login.html
-
           curl --fail --silent http://127.0.0.1:8000/api/config > /tmp/config.json
           grep -q 'supabase_url' /tmp/config.json
           grep -q 'supabase_anon_key' /tmp/config.json
-
           curl --fail --silent http://127.0.0.1:8000/ready > /tmp/ready.json
           grep -q '"checks"' /tmp/ready.json
+          grep -q '"sibyl"' /tmp/ready.json
