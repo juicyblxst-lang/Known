@@ -11,8 +11,9 @@ from .agent import KnownAgent
 from .api import router
 from .models import Message, SupportRequest, SupportResponse
 from .session_store import InMemorySessionStore
+from .supabase_sessions import SupabaseSessionStore
 
-app = FastAPI(title="Known", version="0.3.0")
+app = FastAPI(title="Known", version="0.4.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[x.strip() for x in os.getenv("KNOWN_CORS_ORIGINS", "http://localhost:8000").split(",")],
@@ -22,46 +23,61 @@ app.add_middleware(
 )
 app.include_router(router)
 agent = KnownAgent()
-sessions = InMemorySessionStore()
+local_sessions = InMemorySessionStore()
+durable_sessions = SupabaseSessionStore()
 
 
 class SupportSessionResponse(SupportResponse):
     session_id: str
     conversation: list[Message]
+    persistence: str
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "known", "version": "0.3.0"}
+    return {"status": "ok", "service": "known", "version": "0.4.0", "conversation_persistence": "supabase" if durable_sessions.configured else "local-development"}
 
 
 @app.post("/api/support", response_model=SupportSessionResponse)
 def support(request: SupportRequest, session_id: str | None = None) -> SupportSessionResponse:
     resolved_session_id = session_id or f"{request.customer.id}:default"
-    try:
-        session = sessions.get_or_create(resolved_session_id, request.customer.id)
-    except ValueError as exc:
-        raise HTTPException(status_code=403, detail="session does not belong to customer") from exc
+    if durable_sessions.configured:
+        business_id = os.getenv("KNOWN_BUSINESS_ID")
+        if not business_id:
+            raise HTTPException(status_code=500, detail="KNOWN_BUSINESS_ID is required when Supabase is configured")
+        try:
+            session = durable_sessions.get_or_create(resolved_session_id, request.customer.id, business_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail="session does not belong to customer") from exc
+        append = lambda message: durable_sessions.append(resolved_session_id, message)
+        persistence = "supabase"
+    else:
+        try:
+            session = local_sessions.get_or_create(resolved_session_id, request.customer.id)
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail="session does not belong to customer") from exc
+        append = session.append
+        persistence = "local-development"
 
-    # The stored conversation is authoritative for this session. Include any
-    # explicitly supplied messages only when starting an empty session.
     conversation = list(session.messages) if session.messages else list(request.conversation)
     agent_request = request.model_copy(update={"conversation": conversation})
 
-    session.append(Message(role="user", content=request.message))
+    user_message = Message(role="user", content=request.message)
+    append(user_message)
+    session.messages.append(user_message)
     result = agent.handle(agent_request)
-    session.append(Message(role="assistant", content=result.reply))
+    assistant_message = Message(role="assistant", content=result.reply)
+    append(assistant_message)
+    session.messages.append(assistant_message)
 
-    return SupportSessionResponse(
-        **result.model_dump(),
-        session_id=resolved_session_id,
-        conversation=list(session.messages),
-    )
+    return SupportSessionResponse(**result.model_dump(), session_id=resolved_session_id, conversation=list(session.messages), persistence=persistence)
 
 
 @app.get("/api/sessions/{session_id}")
 def get_session(session_id: str) -> dict:
-    session = sessions.get(session_id)
+    if durable_sessions.configured:
+        raise HTTPException(status_code=400, detail="Use /api/support with customer identity to load a durable session")
+    session = local_sessions.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
     return session.__dict__
