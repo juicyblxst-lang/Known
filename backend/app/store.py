@@ -17,28 +17,19 @@ class StructuredStore:
     def configured(self) -> bool:
         return bool(self.url and self.key)
 
+    def _headers(self) -> dict[str, str]:
+        return {"apikey": self.key, "Authorization": f"Bearer {self.key}", "Content-Type": "application/json"}
+
     def _get(self, table: str, params: dict[str, str]) -> list[dict[str, Any]]:
         if not self.configured:
             return []
-        response = httpx.get(
-            f"{self.url}/rest/v1/{table}",
-            params=params,
-            headers={"apikey": self.key, "Authorization": f"Bearer {self.key}"},
-            timeout=10,
-        )
+        response = httpx.get(f"{self.url}/rest/v1/{table}", params=params, headers=self._headers(), timeout=10)
         response.raise_for_status()
         data = response.json()
         return data if isinstance(data, list) else []
 
     def customers(self, business_id: str) -> list[dict[str, Any]]:
-        return self._get(
-            "customers",
-            {
-                "business_id": f"eq.{business_id}",
-                "select": "id,name,email,tier",
-                "order": "name.asc",
-            },
-        )
+        return self._get("customers", {"business_id": f"eq.{business_id}", "select": "id,name,email,tier", "order": "name.asc"})
 
     def customer(self, customer_id: str, business_id: str | None = None) -> dict[str, Any] | None:
         params = {"id": f"eq.{customer_id}", "limit": "1"}
@@ -52,3 +43,25 @@ class StructuredStore:
         if business_id:
             params["business_id"] = f"eq.{business_id}"
         return self._get("orders", params)
+
+    def update_order_status(self, order_id: str, customer_id: str, business_id: str, status: str) -> dict[str, Any]:
+        """Perform a real tenant-scoped order mutation through Supabase REST."""
+        if not self.configured:
+            raise RuntimeError("Structured backend is not configured")
+        params = {
+            "id": f"eq.{order_id}",
+            "customer_id": f"eq.{customer_id}",
+            "business_id": f"eq.{business_id}",
+        }
+        response = httpx.patch(
+            f"{self.url}/rest/v1/orders",
+            params=params,
+            headers={**self._headers(), "Prefer": "return=representation"},
+            json={"status": status},
+            timeout=10,
+        )
+        response.raise_for_status()
+        rows = response.json()
+        if not rows:
+            raise LookupError("order not found")
+        return rows[0]
