@@ -5,7 +5,6 @@ let session = null;
 let sessionId = null;
 let selectedCustomer = null;
 
-const customerList = document.querySelector(".sidebar");
 const messages = document.querySelector("#messages");
 const form = document.querySelector("#composer");
 const input = document.querySelector("#message");
@@ -14,9 +13,7 @@ const customerName = document.querySelector("header h1");
 const customerMeta = document.querySelector("header p");
 const customerPanel = document.querySelector(".context");
 
-function apiUrl(path) {
-  return `${API}${path}`;
-}
+function apiUrl(path) { return `${API}${path}`; }
 
 function addMessage(label, text, className) {
   const el = document.createElement("div");
@@ -28,6 +25,13 @@ function addMessage(label, text, className) {
   el.append(small, p);
   messages.appendChild(el);
   messages.scrollTop = messages.scrollHeight;
+}
+
+function renderConversation(items) {
+  messages.innerHTML = "";
+  for (const item of items || []) {
+    addMessage(item.role === "assistant" ? "KNOWN" : selectedCustomer.name.toUpperCase(), item.content, item.role === "assistant" ? "agent-msg" : "customer-msg");
+  }
 }
 
 function renderCustomers(customers) {
@@ -65,52 +69,53 @@ function renderWorkspace(data) {
   const orderBody = customerPanel.querySelector("section:nth-child(2) .context-body");
   orderBody.innerHTML = "";
   data.orders.forEach((order) => {
-    const row = document.createElement("div");
-    row.className = "order";
-    const id = document.createElement("b");
-    id.textContent = order.id;
-    const status = document.createElement("span");
-    status.className = `status ${order.status === "delivered" ? "delivered" : "delayed"}`;
-    status.textContent = order.status;
-    const meta = document.createElement("small");
-    meta.textContent = `$${Number(order.total).toFixed(2)} · ${(order.items || []).join(", ")}`;
-    row.append(id, status, meta);
-    orderBody.appendChild(row);
+    const row = document.createElement("div"); row.className = "order";
+    const id = document.createElement("b"); id.textContent = order.id;
+    const status = document.createElement("span"); status.className = `status ${order.status === "delivered" ? "delivered" : "delayed"}`; status.textContent = order.status;
+    const meta = document.createElement("small"); meta.textContent = `$${Number(order.total).toFixed(2)} · ${(order.items || []).join(", ")}`;
+    row.append(id, status, meta); orderBody.appendChild(row);
   });
   const memoryBody = customerPanel.querySelector(".memory-panel .context-body");
   memoryBody.querySelectorAll("article").forEach((node) => node.remove());
   const memories = data.memory || [];
   memories.slice(0, 8).forEach((memory) => {
     const article = document.createElement("article");
-    const label = document.createElement("label");
-    label.textContent = memory.type || "MEMORY";
-    const text = document.createElement("p");
-    text.textContent = memory.content || "";
-    article.append(label, text);
-    memoryBody.insertBefore(article, memoryBody.querySelector(".source"));
+    const label = document.createElement("label"); label.textContent = memory.type || "MEMORY";
+    const text = document.createElement("p"); text.textContent = memory.content || "";
+    article.append(label, text); memoryBody.insertBefore(article, memoryBody.querySelector(".source"));
   });
-  const count = customerPanel.querySelector(".memory-count");
-  count.textContent = String(memories.length);
+  customerPanel.querySelector(".memory-count").textContent = String(memories.length);
+}
+
+async function loadConversation(customer) {
+  const id = `${customer.id}:default`;
+  const response = await fetch(apiUrl(`/api/sessions/${encodeURIComponent(id)}?customer_id=${encodeURIComponent(customer.id)}`), { headers: { Authorization: `Bearer ${session.accessToken}` } });
+  if (response.status === 401) { signOut(); location.href = "./login.html"; return; }
+  if (!response.ok) throw new Error(`Unable to load conversation (${response.status})`);
+  const data = await response.json();
+  sessionId = data.session_id;
+  renderConversation(data.messages || []);
+  sessionLabel.textContent = `Session: ${data.persistence}`;
 }
 
 async function loadWorkspace(customer) {
-  const response = await fetch(apiUrl(`/api/workspace/${encodeURIComponent(customer.id)}`), {
-    headers: { Authorization: `Bearer ${session.accessToken}` },
-  });
+  const response = await fetch(apiUrl(`/api/workspace/${encodeURIComponent(customer.id)}`), { headers: { Authorization: `Bearer ${session.accessToken}` } });
+  if (response.status === 401) { signOut(); location.href = "./login.html"; return; }
   if (!response.ok) throw new Error(`Unable to load customer workspace (${response.status})`);
   const data = await response.json();
   renderWorkspace(data);
   document.querySelectorAll(".customer").forEach((node) => node.classList.toggle("active", node.dataset.customerId === customer.id));
-  messages.innerHTML = "";
-  sessionId = `${customer.id}:default`;
-  sessionLabel.textContent = "Session: ready";
   input.placeholder = `Reply to ${customer.name.split(" ")[0]}…`;
+  await loadConversation(customer);
+}
+
+async function selectCustomer(customer) {
+  try { await loadWorkspace(customer); } catch (error) { addMessage("SYSTEM", error.message || "Unable to load customer.", "agent-msg"); }
 }
 
 async function loadCustomers() {
-  const response = await fetch(apiUrl("/api/customers"), {
-    headers: { Authorization: `Bearer ${session.accessToken}` },
-  });
+  const response = await fetch(apiUrl("/api/customers"), { headers: { Authorization: `Bearer ${session.accessToken}` } });
+  if (response.status === 401) { signOut(); location.href = "./login.html"; return; }
   if (!response.ok) throw new Error(`Unable to load customers (${response.status})`);
   const customers = await response.json();
   renderCustomers(customers);
@@ -121,54 +126,26 @@ async function loadCustomers() {
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!selectedCustomer) return;
-  const message = input.value.trim();
-  if (!message) return;
-  input.value = "";
-  addMessage(`${selectedCustomer.name.toUpperCase()} · NOW`, message, "customer-msg");
-  const button = form.querySelector("button");
-  button.disabled = true;
-  button.textContent = "…";
+  const message = input.value.trim(); if (!message) return;
+  input.value = ""; addMessage(`${selectedCustomer.name.toUpperCase()} · NOW`, message, "customer-msg");
+  const button = form.querySelector("button"); button.disabled = true; button.textContent = "…";
   try {
     const url = new URL(apiUrl("/api/support"), window.location.href);
     url.searchParams.set("session_id", sessionId || `${selectedCustomer.id}:default`);
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` },
-      body: JSON.stringify({
-        customer: selectedCustomer,
-        message,
-        conversation: [],
-        orders: [],
-      }),
-    });
-    if (response.status === 401) {
-      signOut();
-      location.href = "./login.html";
-      return;
-    }
+    const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` }, body: JSON.stringify({ customer: selectedCustomer, message, conversation: [], orders: [] }) });
+    if (response.status === 401) { signOut(); location.href = "./login.html"; return; }
     if (!response.ok) throw new Error(`Support request failed (${response.status})`);
     const data = await response.json();
-    sessionId = data.session_id;
-    sessionLabel.textContent = `Session: ${data.persistence}`;
-    addMessage("KNOWN · NOW", data.reply, "agent-msg");
-  } catch (error) {
-    addMessage("SYSTEM", error.message || "Unable to reach Known.", "agent-msg");
-  } finally {
-    button.disabled = false;
-    button.textContent = "Send";
-    input.focus();
-  }
+    sessionId = data.session_id; sessionLabel.textContent = `Session: ${data.persistence}`;
+    renderConversation(data.conversation || []);
+  } catch (error) { addMessage("SYSTEM", error.message || "Unable to reach Known.", "agent-msg"); }
+  finally { button.disabled = false; button.textContent = "Send"; input.focus(); }
 });
 
 (async function bootstrap() {
   try {
     session = await getSession();
-    if (!session) {
-      location.href = "./login.html";
-      return;
-    }
+    if (!session) { location.href = "./login.html"; return; }
     await loadCustomers();
-  } catch (error) {
-    addMessage("SYSTEM", error.message || "Unable to initialize Known.", "agent-msg");
-  }
+  } catch (error) { addMessage("SYSTEM", error.message || "Unable to initialize Known.", "agent-msg"); }
 })();
