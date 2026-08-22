@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from openai import OpenAI
 
+from .auth import AuthContext
 from .memory import SibylMemory
 from .models import SupportRequest, SupportResponse
 
@@ -13,8 +14,16 @@ class KnownAgent:
         self.client = OpenAI(api_key=os.environ["OPENAI_API_KEY"]) if os.getenv("OPENAI_API_KEY") else None
         self.model = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 
-    def handle(self, request: SupportRequest) -> SupportResponse:
-        retrieved = self.memory.search(request.customer.id, request.message)
+    def handle(
+        self,
+        request: SupportRequest,
+        auth: AuthContext | None = None,
+    ) -> SupportResponse:
+        # Production requests always pass AuthContext, which gives Sibyl a
+        # tenant root controlled by the authenticated business. Tests and the
+        # local fallback may omit it and use a deterministic local tenant.
+        business_id = auth.business_id if auth else os.getenv("KNOWN_LOCAL_BUSINESS_ID", "local-development")
+        retrieved = self.memory.search(business_id, request.customer.id, request.message)
         memories = retrieved.memories
         action = self._action(request, memories)
 
@@ -46,7 +55,12 @@ support pattern, adapt the proposed resolution to it."""
         lower = request.message.lower()
         preference_markers = ("i prefer", "i always", "please remember", "my size is", "i'm allergic", "i am allergic")
         if any(marker in lower for marker in preference_markers):
-            ok, _ = self.memory.remember(request.customer.id, request.message, "customer_preference")
+            ok, _ = self.memory.remember(
+                business_id,
+                request.customer.id,
+                request.message,
+                "customer_preference",
+            )
             memory_written = ok
 
         return SupportResponse(
