@@ -1,0 +1,17 @@
+services:
+  known:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      PORT: "8000"
+      SIBYL_MEMORY_DB: /data/sibyl/memory.db
+    volumes:
+      - sibyl-data:/data/sibyl
+
+volumes:
+  sibyl-data:
+    name: known-sibyl-data
