@@ -4,8 +4,9 @@ create table if not exists public.shopify_installations (
   shop_domain text not null,
   shop_name text,
   access_token_encrypted text not null,
-  refresh_token_encrypted text,
+  refresh_token_encrypted text not null,
   access_token_expires_at timestamptz,
+  refresh_token_expires_at timestamptz,
   scopes text[] not null default '{}',
   installed_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -29,7 +30,10 @@ create table if not exists public.shopify_webhook_events (
   webhook_id text primary key,
   shop_domain text not null,
   topic text not null,
-  received_at timestamptz not null default now()
+  status text not null default 'processing',
+  received_at timestamptz not null default now(),
+  processed_at timestamptz,
+  error text
 );
 
 alter table public.shopify_installations enable row level security;
@@ -42,3 +46,4 @@ create policy "shopify installation own business" on public.shopify_installation
 
 create index if not exists shopify_installations_business_idx on public.shopify_installations(business_id);
 create index if not exists shopify_oauth_states_expiry_idx on public.shopify_oauth_states(expires_at);
+create index if not exists shopify_webhook_status_idx on public.shopify_webhook_events(status);
