@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from app.agent import KnownAgent
 from app.memory import SibylMemory
 from app.models import SupportRequest
+from app.production_agent import KnownAgent
 
 
 class FakeResponse:
@@ -47,9 +47,7 @@ def test_session_one_memory_changes_session_two_reasoning(tmp_path: Path, monkey
     assert second.reply == "Personalized response"
 
     same_customer = memory.search("business-1", "customer-1", "late deliveries")
-    assert same_customer.available
-    assert same_customer.memories
+    assert same_customer.available and same_customer.memories
 
     other_customer = memory.search("business-1", "customer-2", "late deliveries")
-    assert other_customer.available
-    assert other_customer.memories == []
+    assert other_customer.available and other_customer.memories == []
