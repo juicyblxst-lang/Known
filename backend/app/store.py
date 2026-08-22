@@ -30,6 +30,16 @@ class StructuredStore:
         data = response.json()
         return data if isinstance(data, list) else []
 
+    def customers(self, business_id: str) -> list[dict[str, Any]]:
+        return self._get(
+            "customers",
+            {
+                "business_id": f"eq.{business_id}",
+                "select": "id,name,email,tier",
+                "order": "name.asc",
+            },
+        )
+
     def customer(self, customer_id: str, business_id: str | None = None) -> dict[str, Any] | None:
         params = {"id": f"eq.{customer_id}", "limit": "1"}
         if business_id:
