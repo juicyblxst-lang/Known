@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from .auth import AuthContext, require_auth
 from .memory import SibylMemory
 from .models import ActionRequest, ActionResponse
-from .shopify import authorization_url, consume_oauth_state, create_oauth_state, exchange_code, installation, save_installation, sync_shop, validate_shop_domain, verify_webhook, webhook_seen
+from .shopify import authorization_url, consume_oauth_state, create_oauth_state, exchange_code, installation, installation_by_shop, save_installation, sync_shop, validate_shop_domain, verify_oauth_hmac, verify_webhook, webhook_seen
 from .store import StructuredStore
 from .supabase_sessions import SupabaseSessionStore
 from .workspace import WorkspaceResponse
@@ -55,18 +55,9 @@ async def get_workspace(customer_id: str, memory_query: str = Query("customer hi
 
 @router.post("/actions", response_model=ActionResponse)
 async def execute_action(request: ActionRequest, auth: AuthContext = Depends(require_auth)) -> ActionResponse:
-    customer = store.customer(request.customer_id, auth.business_id)
-    if customer is None:
-        raise HTTPException(status_code=404, detail="customer not found")
-    status = {"cancel_order": "cancelled", "mark_return_requested": "return_requested", "mark_refund_requested": "refund_requested"}[request.action]
-    try:
-        order = store.update_order_status(request.order_id, request.customer_id, auth.business_id, status)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail="order not found") from exc
-    except (httpx.HTTPError, RuntimeError):
-        raise upstream_error()
-    written, _ = memory.record_event(auth.business_id, request.customer_id, "support_action", {"action": request.action, "order_id": request.order_id, "status": status})
-    return ActionResponse(action=request.action, order=order, memory_written=written)
+    # Never pretend a local Supabase status change is a real Shopify action.
+    # Real refunds/returns/cancellations must use Shopify's authorized APIs.
+    raise HTTPException(status_code=501, detail="Commerce actions are not enabled yet. Known will not fabricate a Shopify action.")
 
 
 class ShopifyConnectRequest(BaseModel):
@@ -106,9 +97,18 @@ async def shopify_sync(auth: AuthContext = Depends(require_auth)) -> dict[str, o
 
 
 @router.get("/shopify/callback")
-async def shopify_callback(shop: str, code: str, state: str, hmac: str | None = None) -> RedirectResponse:
+async def shopify_callback(request: Request) -> RedirectResponse:
     try:
-        shop_domain = validate_shop_domain(shop)
+        params = {key: value for key, value in request.query_params.items()}
+        shop_domain = validate_shop_domain(params.get("shop", ""))
+        if not verify_oauth_hmac(params):
+            raise HTTPException(status_code=401, detail="Invalid Shopify OAuth signature")
+        if params.get("error"):
+            raise HTTPException(status_code=400, detail="Shopify authorization was not completed")
+        code = params.get("code")
+        state = params.get("state")
+        if not code or not state:
+            raise HTTPException(status_code=400, detail="Missing Shopify authorization parameters")
         state_data = consume_oauth_state(state, shop_domain)
         token_data = exchange_code(shop_domain, code)
         save_installation(state_data["business_id"], shop_domain, token_data)
@@ -130,13 +130,12 @@ async def shopify_webhook(request: Request) -> dict[str, str]:
         raise HTTPException(status_code=400, detail="Missing Shopify webhook headers")
     if webhook_seen(webhook_id, shop, topic):
         return {"status": "duplicate"}
-    rows = __import__("backend.app.shopify", fromlist=["_db_get"])._db_get("shopify_installations", {"shop_domain": f"eq.{shop}", "limit": "1"})
-    if not rows:
+    current = installation_by_shop(shop)
+    if not current:
         return {"status": "ignored"}
     try:
-        sync_shop(rows[0]["business_id"], shop)
+        sync_shop(current["business_id"], shop)
     except Exception:
-        # The event is acknowledged after signature validation; reconciliation/sync can retry later.
         return {"status": "accepted", "sync": "deferred"}
     return {"status": "accepted", "sync": "complete"}
 
