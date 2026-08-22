@@ -30,3 +30,26 @@ jobs:
 
       - name: Run tests
         run: python -m pytest -q
+
+  container:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build production container
+        run: docker build -t known-ci .
+
+      - name: Smoke test production container
+        run: |
+          docker run -d --name known-ci -p 8000:8000 known-ci
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent http://127.0.0.1:8000/health > /tmp/health.json; then
+              cat /tmp/health.json
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs known-ci
+          exit 1
