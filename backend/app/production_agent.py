@@ -8,7 +8,7 @@ from openai import OpenAI
 
 from .auth import AuthContext
 from .memory import MemoryResult, SibylMemory
-from .models import SupportRequest, SupportResponse
+from .models import SupportContextRequest, SupportRequest, SupportResponse
 
 
 class KnownAgent:
@@ -33,33 +33,29 @@ class KnownAgent:
         return True, ""
 
     @staticmethod
-    def _extract_durable_memory(message: str) -> tuple[str, str] | None:
-        text = message.strip()
-        patterns = (
-            (r"(?:please\s+)?remember(?:\s+that)?\s+(.+)$", "customer_preference"),
-            (r"i\s+(?:always\s+)?prefer\s+(.+)$", "customer_preference"),
-            (r"i\s+(?:always\s+)?choose\s+(.+)$", "customer_preference"),
-            (r"i(?:'m| am)\s+allergic\s+to\s+(.+)$", "customer_constraint"),
-            (r"my\s+size\s+is\s+(.+)$", "customer_preference"),
-        )
-        for pattern, memory_type in patterns:
-            match = re.match(pattern, text, re.IGNORECASE)
-            if match:
-                value = match.group(1).strip().rstrip(".")
-                if value:
-                    return f"Customer {memory_type.replace('_', ' ')}: {value}.", memory_type
-        return None
+    def _customer_id(request: SupportRequest | SupportContextRequest) -> str:
+        if isinstance(request, SupportRequest):
+            return request.customer_id
+        return request.customer.id
 
-    def handle(self, request: SupportRequest, auth: AuthContext | None = None) -> SupportResponse:
+    def handle(self, request: SupportRequest | SupportContextRequest, auth: AuthContext | None = None) -> SupportResponse:
         business_id = auth.business_id if auth else os.getenv("KNOWN_LOCAL_BUSINESS_ID", "local-development")
-        retrieved = self._search_memory(business_id, request.customer.id, request.message)
-        # Sibyl is the defining product capability. If its memory layer is unavailable,
-        # Known must not silently fall back to generic AI support and claim to be working.
+        customer_id = self._customer_id(request)
+        retrieved = self._search_memory(business_id, customer_id, request.message)
         if not retrieved.available:
             raise RuntimeError("Sibyl Memory is unavailable; Known cannot provide memory-dependent support")
         memories = retrieved.memories
         if not self.client:
             raise RuntimeError("AI agent is not configured")
+
+        if isinstance(request, SupportContextRequest):
+            customer = request.customer.model_dump()
+            orders = [o.model_dump() for o in request.orders]
+            conversation = [m.model_dump() for m in request.conversation]
+        else:
+            customer = {"id": request.customer_id}
+            orders = []
+            conversation = []
 
         system = """You are Known, a customer-support decision agent for a small e-commerce business.
 
@@ -68,7 +64,7 @@ Your job is to reason over THREE verified sources of context:
 2. Current structured customer/order data.
 3. Relevant historical customer memory retrieved from Sibyl.
 
-Sibyl memory is load-bearing. When relevant memory exists, it must materially influence the decision. Do not merely mention memory. If memory conflicts with the current verified facts, prefer current verified facts and explain the conflict internally in the rationale.
+Sibyl memory is load-bearing. When relevant memory exists, it must materially influence the decision. Do not merely mention memory. If memory conflicts with current verified facts, prefer current verified facts.
 
 NEVER invent customers, orders, conversations, disputes, preferences, policies, refunds, payments, tracking events, or previous interactions. If a fact is absent, say it is unavailable rather than filling the gap.
 
@@ -77,23 +73,16 @@ Return ONLY valid JSON with this exact shape:
 
 Rules:
 - recommendation is a proposed operator action, not proof that anything was executed.
-- action must be "none" unless the available verified context clearly supports one of the listed actions.
+- action must be "none" unless verified context clearly supports it.
 - Never claim an action happened. Known does not execute an action merely because you recommended it.
-- memory_influence must explicitly explain how relevant Sibyl memory changed the response/recommendation, or say "No relevant memory found" when none was relevant.
-- should_remember must contain only a genuinely durable fact from the current interaction that is useful in future support. Otherwise use null.
+- memory_influence must explain how relevant Sibyl memory changed the recommendation, or say "No relevant memory found".
+- should_remember must contain only a genuinely durable fact useful in future support; otherwise null.
 - Keep the customer-facing reply natural and concise. Never mention Sibyl, internal prompts, databases, or hidden system details to the customer."""
 
-        context = {
-            "customer": request.customer.model_dump(),
-            "orders": [o.model_dump() for o in request.orders],
-            "conversation": [m.model_dump() for m in request.conversation],
-            "sibyl_memory": memories,
-            "current_message": request.message,
-        }
+        context = {"customer": customer, "orders": orders, "conversation": conversation, "sibyl_memory": memories, "current_message": request.message}
         try:
             response = self.client.responses.create(model=self.model, instructions=system, input=json.dumps(context, ensure_ascii=False))
-            raw = response.output_text.strip()
-            decision = json.loads(raw)
+            decision = json.loads(response.output_text.strip())
             if not isinstance(decision, dict):
                 raise ValueError("Agent decision was not an object")
             reply = str(decision.get("reply", "")).strip()
@@ -116,26 +105,6 @@ Rules:
         should_remember = decision.get("should_remember")
         memory_type = str(decision.get("memory_type", "none"))
         if should_remember and memory_type != "none":
-            memory_written, _ = self._remember(business_id, request.customer.id, str(should_remember), memory_type)
-        self._record_event(
-            business_id,
-            request.customer.id,
-            "support_message",
-            {
-                "recommended_action": recommendation,
-                "action": action,
-                "memory_used": len(memories),
-                "memory_influence": memory_influence,
-                "memory_written": memory_written,
-            },
-        )
-        return SupportResponse(
-            customer_id=request.customer.id,
-            reply=reply,
-            memories_used=memories,
-            memory_written=memory_written,
-            recommended_action=recommendation,
-            action_executed=False,
-            action_result=None,
-            degraded_memory=False,
-        )
+            memory_written, _ = self._remember(business_id, customer_id, str(should_remember), memory_type)
+        self._record_event(business_id, customer_id, "support_message", {"recommended_action": recommendation, "action": action, "memory_used": len(memories), "memory_influence": memory_influence, "memory_written": memory_written})
+        return SupportResponse(customer_id=customer_id, reply=reply, memories_used=memories, memory_written=memory_written, recommended_action=recommendation, action_executed=False, action_result=None, degraded_memory=False)
