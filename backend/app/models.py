@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -36,4 +38,18 @@ class SupportResponse(BaseModel):
     memories_used: list[dict] = Field(default_factory=list)
     memory_written: bool = False
     recommended_action: str | None = None
+    action_executed: bool = False
+    action_result: dict | None = None
     degraded_memory: bool = False
+
+
+class ActionRequest(BaseModel):
+    action: Literal["cancel_order", "mark_return_requested", "mark_refund_requested"]
+    order_id: str
+    customer_id: str
+
+
+class ActionResponse(BaseModel):
+    action: str
+    order: dict
+    memory_written: bool = False
