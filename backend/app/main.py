@@ -19,7 +19,7 @@ from .supabase_sessions import SupabaseSessionStore
 app = FastAPI(title="Known", version="0.5.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[x.strip() for x in os.getenv("KNOWN_CORS_ORIGINS", "http://localhost:8000").split(",")],
+    allow_origins=[x.strip() for x in os.getenv("KNOWN_CORS_ORIGINS", "http://localhost:8000").split(",") if x.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -46,6 +46,16 @@ def health() -> dict[str, str]:
     }
 
 
+@app.get("/ready")
+def ready() -> dict[str, object]:
+    checks = {
+        "frontend": (Path(__file__).resolve().parents[2] / "frontend").exists(),
+        "supabase": durable_sessions.configured,
+        "openai": bool(os.getenv("OPENAI_API_KEY")),
+    }
+    return {"status": "ready" if all(checks.values()) else "degraded", "checks": checks}
+
+
 @app.post("/api/support", response_model=SupportSessionResponse)
 async def support(
     request: SupportRequest,
@@ -59,7 +69,7 @@ async def support(
             session = durable_sessions.get_or_create(resolved_session_id, request.customer.id, auth.business_id)
         except ValueError as exc:
             raise HTTPException(status_code=403, detail="session does not belong to customer") from exc
-        except (httpx.HTTPError, ValueError) as exc:
+        except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail="Conversation persistence service unavailable") from exc
         append = lambda message: durable_sessions.append(resolved_session_id, message)
         persistence = "supabase"
