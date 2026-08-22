@@ -52,23 +52,28 @@ class KnownAgent:
     def handle(self, request: SupportRequest, auth: AuthContext | None = None) -> SupportResponse:
         business_id = auth.business_id if auth else os.getenv("KNOWN_LOCAL_BUSINESS_ID", "local-development")
         retrieved = self._search_memory(business_id, request.customer.id, request.message)
+
+        # Sibyl is a defining dependency of Known. A production support response
+        # must never silently degrade into generic AI support when memory is unavailable.
+        if not retrieved.available:
+            raise RuntimeError(f"Sibyl memory unavailable: {retrieved.error or 'unknown error'}")
+
         memories = retrieved.memories
         action = self._action(request, memories)
         if not self.client:
             raise RuntimeError("AI agent is not configured")
 
         system = """You are Known, a customer-support agent for a small e-commerce business.
-Use relevant durable customer memory as decision-making context, not merely as a citation.
+Relevant durable customer memory is required context for Known's support decisions.
+Use relevant memory as decision-making context, not merely as a citation.
 Never invent customer history. Give a concise, empathetic answer. Treat order data as current facts and memory as historical context.
 If memory establishes a relevant preference or prior support pattern, adapt the proposed resolution to it.
-Never claim an operational action has happened unless the backend has actually executed it.
-If retrieved memory is empty or unavailable, do not invent historical customer context."""
+Never claim an operational action has happened unless the backend has actually executed it."""
         context = {
             "customer": request.customer.model_dump(),
             "orders": [o.model_dump() for o in request.orders],
             "conversation": [m.model_dump() for m in request.conversation],
             "retrieved_memory": memories,
-            "memory_available": retrieved.available,
             "decision_and_action": action,
             "current_message": request.message,
         }
@@ -82,15 +87,20 @@ If retrieved memory is empty or unavailable, do not invent historical customer c
         extracted = self._extract_durable_memory(request.message)
         if extracted:
             content, memory_type = extracted
-            memory_written, _ = self._remember(business_id, request.customer.id, content, memory_type)
-        self._record_event(business_id, request.customer.id, "support_message", {"recommended_action": action, "memory_used": len(memories)})
+            memory_written, error = self._remember(business_id, request.customer.id, content, memory_type)
+            if not memory_written:
+                raise RuntimeError(f"Sibyl memory persistence failed: {error}")
+        event_written, event_error = self._record_event(business_id, request.customer.id, "support_message", {"recommended_action": action, "memory_used": len(memories)})
+        if not event_written:
+            raise RuntimeError(f"Sibyl memory event persistence failed: {event_error}")
+
         return SupportResponse(
             customer_id=request.customer.id,
             reply=reply,
             memories_used=memories,
             memory_written=memory_written,
             recommended_action=action,
-            degraded_memory=not retrieved.available,
+            degraded_memory=False,
         )
 
     @staticmethod
