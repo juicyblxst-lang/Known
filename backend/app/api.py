@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from .auth import AuthContext, require_auth
@@ -17,6 +18,10 @@ memory = SibylMemory()
 sessions = SupabaseSessionStore()
 
 
+def upstream_error(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=502, detail="Upstream data service unavailable") from exc
+
+
 @router.get("/config")
 def get_public_config() -> dict[str, str]:
     return {
@@ -27,7 +32,10 @@ def get_public_config() -> dict[str, str]:
 
 @router.get("/customers")
 async def get_customers(auth: AuthContext = Depends(require_auth)) -> list[dict]:
-    return store.customers(auth.business_id)
+    try:
+        return store.customers(auth.business_id)
+    except (httpx.HTTPError, ValueError) as exc:
+        raise upstream_error(exc)
 
 
 @router.get("/workspace/{customer_id}", response_model=WorkspaceResponse)
@@ -36,10 +44,16 @@ async def get_workspace(
     memory_query: str = Query("customer history"),
     auth: AuthContext = Depends(require_auth),
 ) -> WorkspaceResponse:
-    customer = store.customer(customer_id, auth.business_id)
-    if customer is None:
-        raise HTTPException(status_code=404, detail="customer not found")
-    orders = store.orders(customer_id, auth.business_id)
+    try:
+        customer = store.customer(customer_id, auth.business_id)
+        if customer is None:
+            raise HTTPException(status_code=404, detail="customer not found")
+        orders = store.orders(customer_id, auth.business_id)
+    except HTTPException:
+        raise
+    except (httpx.HTTPError, ValueError) as exc:
+        raise upstream_error(exc)
+
     retrieved = memory.search(customer_id, memory_query)
     return WorkspaceResponse(
         customer=customer,
@@ -59,8 +73,8 @@ async def get_conversation_session(
         return {"session_id": session_id, "customer_id": customer_id, "messages": [], "persistence": "local-development"}
     try:
         session = sessions.get(session_id, customer_id, auth.business_id)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail="Unable to load conversation session") from exc
+    except (httpx.HTTPError, ValueError) as exc:
+        raise upstream_error(exc)
     if session is None:
         return {"session_id": session_id, "customer_id": customer_id, "messages": [], "persistence": "supabase"}
     return {
