@@ -30,13 +30,14 @@ async def require_auth(authorization: str | None = Header(default=None)) -> Auth
 
     token = authorization.split(" ", 1)[1].strip()
     try:
-        response = await httpx.AsyncClient(timeout=10).get(
-            f"{url}/auth/v1/user",
-            headers={
-                "apikey": service_key,
-                "Authorization": f"Bearer {token}",
-            },
-        )
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(
+                f"{url}/auth/v1/user",
+                headers={
+                    "apikey": service_key,
+                    "Authorization": f"Bearer {token}",
+                },
+            )
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=503, detail="Authentication service unavailable") from exc
 
