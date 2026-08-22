@@ -1,11 +1,22 @@
-const API = window.KNOWN_API_URL || "";
-const customerId = "demo-customer";
-let sessionId = null;
+import { getSession, signOut } from "./auth.js";
 
+const API = window.KNOWN_API_URL || "";
+let session = null;
+let sessionId = null;
+let selectedCustomer = null;
+
+const customerList = document.querySelector(".sidebar");
+const messages = document.querySelector("#messages");
 const form = document.querySelector("#composer");
 const input = document.querySelector("#message");
-const messages = document.querySelector("#messages");
 const sessionLabel = document.querySelector("#session");
+const customerName = document.querySelector("header h1");
+const customerMeta = document.querySelector("header p");
+const customerPanel = document.querySelector(".context");
+
+function apiUrl(path) {
+  return `${API}${path}`;
+}
 
 function addMessage(label, text, className) {
   const el = document.createElement("div");
@@ -19,28 +30,122 @@ function addMessage(label, text, className) {
   messages.scrollTop = messages.scrollHeight;
 }
 
+function renderCustomers(customers) {
+  document.querySelectorAll(".customer").forEach((node) => node.remove());
+  const label = document.querySelector(".label");
+  customers.forEach((customer) => {
+    const button = document.createElement("button");
+    button.className = "customer";
+    button.dataset.customerId = customer.id;
+    const initial = document.createElement("span");
+    initial.textContent = customer.name.charAt(0).toUpperCase();
+    const info = document.createElement("div");
+    const strong = document.createElement("strong");
+    strong.textContent = customer.name;
+    const small = document.createElement("small");
+    small.textContent = `${customer.tier} · ${customer.email}`;
+    info.append(strong, small);
+    button.append(initial, info);
+    button.addEventListener("click", () => selectCustomer(customer));
+    label.after(button);
+  });
+}
+
+function renderWorkspace(data) {
+  selectedCustomer = data.customer;
+  customerName.textContent = data.customer?.name || "Customer";
+  customerMeta.textContent = data.customer ? `${data.customer.tier} · ${data.customer.email}` : "Customer not found";
+  const details = customerPanel.querySelector("section:first-child .context-body");
+  if (details && data.customer) {
+    details.querySelector("h2").textContent = data.customer.name;
+    details.querySelector("p").textContent = `${data.customer.tier} customer`;
+    details.querySelector("dd").textContent = data.customer.email;
+    details.querySelectorAll("dd")[1].textContent = data.customer.id;
+  }
+  const orderBody = customerPanel.querySelector("section:nth-child(2) .context-body");
+  orderBody.innerHTML = "";
+  data.orders.forEach((order) => {
+    const row = document.createElement("div");
+    row.className = "order";
+    const id = document.createElement("b");
+    id.textContent = order.id;
+    const status = document.createElement("span");
+    status.className = `status ${order.status === "delivered" ? "delivered" : "delayed"}`;
+    status.textContent = order.status;
+    const meta = document.createElement("small");
+    meta.textContent = `$${Number(order.total).toFixed(2)} · ${(order.items || []).join(", ")}`;
+    row.append(id, status, meta);
+    orderBody.appendChild(row);
+  });
+  const memoryBody = customerPanel.querySelector(".memory-panel .context-body");
+  memoryBody.querySelectorAll("article").forEach((node) => node.remove());
+  const memories = data.memory || [];
+  memories.slice(0, 8).forEach((memory) => {
+    const article = document.createElement("article");
+    const label = document.createElement("label");
+    label.textContent = memory.type || "MEMORY";
+    const text = document.createElement("p");
+    text.textContent = memory.content || "";
+    article.append(label, text);
+    memoryBody.insertBefore(article, memoryBody.querySelector(".source"));
+  });
+  const count = customerPanel.querySelector(".memory-count");
+  count.textContent = String(memories.length);
+}
+
+async function loadWorkspace(customer) {
+  const response = await fetch(apiUrl(`/api/workspace/${encodeURIComponent(customer.id)}`), {
+    headers: { Authorization: `Bearer ${session.accessToken}` },
+  });
+  if (!response.ok) throw new Error(`Unable to load customer workspace (${response.status})`);
+  const data = await response.json();
+  renderWorkspace(data);
+  document.querySelectorAll(".customer").forEach((node) => node.classList.toggle("active", node.dataset.customerId === customer.id));
+  messages.innerHTML = "";
+  sessionId = `${customer.id}:default`;
+  sessionLabel.textContent = "Session: ready";
+  input.placeholder = `Reply to ${customer.name.split(" ")[0]}…`;
+}
+
+async function loadCustomers() {
+  const response = await fetch(apiUrl("/api/customers"), {
+    headers: { Authorization: `Bearer ${session.accessToken}` },
+  });
+  if (!response.ok) throw new Error(`Unable to load customers (${response.status})`);
+  const customers = await response.json();
+  renderCustomers(customers);
+  if (!customers.length) throw new Error("No customers are available for this business.");
+  await loadWorkspace(customers[0]);
+}
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!selectedCustomer) return;
   const message = input.value.trim();
   if (!message) return;
   input.value = "";
-  addMessage("MAYA · NOW", message, "customer-msg");
+  addMessage(`${selectedCustomer.name.toUpperCase()} · NOW`, message, "customer-msg");
   const button = form.querySelector("button");
   button.disabled = true;
   button.textContent = "…";
   try {
-    const url = new URL(`${API}/api/support`, window.location.href);
-    url.searchParams.set("session_id", sessionId || `${customerId}:default`);
+    const url = new URL(apiUrl("/api/support"), window.location.href);
+    url.searchParams.set("session_id", sessionId || `${selectedCustomer.id}:default`);
     const response = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` },
       body: JSON.stringify({
-        customer: { id: customerId, name: "Maya Chen", email: "maya@example.com", tier: "vip" },
+        customer: selectedCustomer,
         message,
         conversation: [],
         orders: [],
       }),
     });
+    if (response.status === 401) {
+      signOut();
+      location.href = "./login.html";
+      return;
+    }
     if (!response.ok) throw new Error(`Support request failed (${response.status})`);
     const data = await response.json();
     sessionId = data.session_id;
@@ -54,3 +159,16 @@ form.addEventListener("submit", async (event) => {
     input.focus();
   }
 });
+
+(async function bootstrap() {
+  try {
+    session = await getSession();
+    if (!session) {
+      location.href = "./login.html";
+      return;
+    }
+    await loadCustomers();
+  } catch (error) {
+    addMessage("SYSTEM", error.message || "Unable to initialize Known.", "agent-msg");
+  }
+})();
