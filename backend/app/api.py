@@ -112,8 +112,23 @@ async def shopify_callback(request: Request) -> RedirectResponse:
             raise HTTPException(status_code=400, detail="Missing Shopify authorization parameters")
         state_data = consume_oauth_state(state, shop_domain)
         token_data = exchange_code(shop_domain, code)
+
+        # Persist the installation before any optional integration work. This
+        # keeps a successful Shopify authorization from being reported as a
+        # failed connection just because webhook setup is unavailable.
         save_installation(state_data["business_id"], shop_domain, token_data)
-        register_webhooks(shop_domain, token_data["access_token"])
+
+        # Webhooks are useful for keeping the workspace fresh, but they are not
+        # required to establish the store connection or perform the initial
+        # import. A webhook configuration problem must not undo a valid OAuth
+        # installation.
+        try:
+            register_webhooks(shop_domain, token_data["access_token"])
+        except Exception as exc:
+            logger.warning("Shopify webhook registration skipped after successful connection: %s", exc)
+
+        # Initial sync remains a required step because Known should only show a
+        # connected workspace once real Shopify data has been imported.
         sync_shop(state_data["business_id"], shop_domain)
         return RedirectResponse(url=f"{frontend}/?shopify=connected", status_code=303)
     except HTTPException as exc:
