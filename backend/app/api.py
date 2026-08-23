@@ -50,7 +50,6 @@ class CSVImportRequest(BaseModel):
 async def inspect_csv(request: CSVImportRequest, auth: AuthContext = Depends(require_auth)) -> dict:
     try:
         result = inspect_and_build(request.csv_text)
-        # Never expose tenant identifiers or service credentials to the client.
         return {key: value for key, value in result.items() if key not in {"customers", "orders"}} | {"status": "ready"}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -61,7 +60,10 @@ async def commit_csv(request: CSVImportRequest, auth: AuthContext = Depends(requ
     try:
         result = inspect_and_build(request.csv_text)
         counts = store.import_csv_records(auth.business_id, result["customers"], result["orders"])
-        return {"status": "complete", **counts}
+        memory_counts = memory.import_customer_history(auth.business_id, result["customers"], result["orders"])
+        if memory_counts["memories"] != len(result["customers"]):
+            raise RuntimeError("Customer memory could not be fully initialized")
+        return {"status": "complete", **counts, **memory_counts, "memory_ready": True}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (httpx.HTTPError, RuntimeError) as exc:
