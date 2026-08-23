@@ -5,7 +5,7 @@ from openai import OpenAI
 
 from .auth import AuthContext
 from .memory import MemoryResult, SibylMemory
-from .models import SupportRequest, SupportResponse
+from .models import SupportContextRequest, SupportRequest, SupportResponse
 
 
 class KnownAgent:
@@ -29,11 +29,34 @@ class KnownAgent:
             return self.memory.record_event(business_id, customer_id, kind, body)
         return True, ""
 
-    def handle(self, request: SupportRequest, auth: AuthContext | None = None) -> SupportResponse:
+    @staticmethod
+    def _customer_id(request: SupportRequest | SupportContextRequest) -> str:
+        if isinstance(request, SupportContextRequest):
+            return request.customer.id
+        return request.customer.id if request.customer is not None else request.customer_id  # type: ignore[return-value]
+
+    @staticmethod
+    def _customer_payload(request: SupportRequest | SupportContextRequest) -> dict:
+        if isinstance(request, SupportContextRequest):
+            return request.customer.model_dump()
+        if request.customer is not None:
+            return request.customer.model_dump()
+        return {"id": request.customer_id}
+
+    @staticmethod
+    def _orders(request: SupportRequest | SupportContextRequest) -> list[dict]:
+        return [o.model_dump() for o in getattr(request, "orders", [])]
+
+    @staticmethod
+    def _conversation(request: SupportRequest | SupportContextRequest) -> list[dict]:
+        return [m.model_dump() for m in getattr(request, "conversation", [])]
+
+    def handle(self, request: SupportRequest | SupportContextRequest, auth: AuthContext | None = None) -> SupportResponse:
         business_id = auth.business_id if auth else os.getenv("KNOWN_LOCAL_BUSINESS_ID", "local-development")
-        retrieved = self._search_memory(business_id, request.customer.id, request.message)
+        customer_id = self._customer_id(request)
+        retrieved = self._search_memory(business_id, customer_id, request.message)
         memories = retrieved.memories
-        action = self._action(request, memories)
+        action = self._action(request.message, memories)
 
         system = """You are Known, a customer-support agent for a small e-commerce business.
 Use relevant durable customer memory as decision-making context, not merely as a citation.
@@ -41,9 +64,9 @@ Never invent customer history. Give a concise, empathetic answer. Treat order da
 facts and memory as historical context. If memory establishes a relevant preference or prior support pattern, adapt the proposed resolution to it.
 Never claim an operational action has happened unless the backend has actually executed it."""
         context = {
-            "customer": request.customer.model_dump(),
-            "orders": [o.model_dump() for o in request.orders],
-            "conversation": [m.model_dump() for m in request.conversation],
+            "customer": self._customer_payload(request),
+            "orders": self._orders(request),
+            "conversation": self._conversation(request),
             "retrieved_memory": memories,
             "decision_and_action": action,
             "current_message": request.message,
@@ -59,19 +82,19 @@ Never claim an operational action has happened unless the backend has actually e
         lower = request.message.lower()
         preference_markers = ("i prefer", "i always", "please remember", "my size is", "i'm allergic", "i am allergic")
         if any(marker in lower for marker in preference_markers):
-            ok, _ = self._remember(business_id, request.customer.id, request.message, "customer_preference")
+            ok, _ = self._remember(business_id, customer_id, request.message, "customer_preference")
             memory_written = ok
 
         event_ok, _ = self._record_event(
             business_id,
-            request.customer.id,
+            customer_id,
             "support_message",
             {"message": request.message, "recommended_action": action, "memory_used": len(memories)},
         )
         memory_written = memory_written or event_ok
 
         return SupportResponse(
-            customer_id=request.customer.id,
+            customer_id=customer_id,
             reply=reply,
             memories_used=memories,
             memory_written=memory_written,
@@ -80,8 +103,8 @@ Never claim an operational action has happened unless the backend has actually e
         )
 
     @staticmethod
-    def _action(request: SupportRequest, memories: list[dict]) -> str | None:
-        text = request.message.lower()
+    def _action(message: str, memories: list[dict]) -> str | None:
+        text = message.lower()
         memory_text = " ".join(str(m.get("content", "")) for m in memories).lower()
         if any(word in text for word in ("refund", "return", "cancel")):
             return "Review order eligibility and offer the applicable return/refund workflow."
@@ -94,8 +117,9 @@ Never claim an operational action has happened unless the backend has actually e
         return None
 
     @staticmethod
-    def _fallback(request: SupportRequest, memories: list[dict], action: str | None) -> str:
-        name = request.customer.name.split()[0] or request.customer.name
+    def _fallback(request: SupportRequest | SupportContextRequest, memories: list[dict], action: str | None) -> str:
+        customer = request.customer if isinstance(request, SupportContextRequest) else request.customer
+        name = customer.name.split()[0] if customer else "Customer"
         if memories and action and "preferred expedited" in action:
             return f"Hi {name}, I found your previous preference for expedited handling when timing is critical. I’ll check the delayed shipment first and, if it cannot meet your Friday deadline, prioritize that preferred resolution."
         if memories and action and "proactively monitor" in action:
