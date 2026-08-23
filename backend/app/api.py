@@ -9,6 +9,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from .auth import AuthContext, require_auth
+from .csv_import import inspect_and_build
 from .memory import SibylMemory
 from .models import ActionRequest, ActionResponse
 from .shopify import authorization_url, consume_oauth_state, create_oauth_state, exchange_code, installation, installation_by_shop, save_installation, sync_shop, validate_shop_domain, verify_oauth_hmac, verify_webhook, webhook_claim, webhook_complete, webhook_fail
@@ -39,6 +40,32 @@ async def get_customers(auth: AuthContext = Depends(require_auth)) -> list[dict]
         return store.customers(auth.business_id)
     except (httpx.HTTPError, ValueError):
         raise upstream_error()
+
+
+class CSVImportRequest(BaseModel):
+    csv_text: str
+
+
+@router.post("/imports/csv/inspect")
+async def inspect_csv(request: CSVImportRequest, auth: AuthContext = Depends(require_auth)) -> dict:
+    try:
+        result = inspect_and_build(request.csv_text)
+        # Never expose tenant identifiers or service credentials to the client.
+        return {key: value for key, value in result.items() if key not in {"customers", "orders"}} | {"status": "ready"}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/imports/csv/commit")
+async def commit_csv(request: CSVImportRequest, auth: AuthContext = Depends(require_auth)) -> dict[str, object]:
+    try:
+        result = inspect_and_build(request.csv_text)
+        counts = store.import_csv_records(auth.business_id, result["customers"], result["orders"])
+        return {"status": "complete", **counts}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (httpx.HTTPError, RuntimeError) as exc:
+        raise upstream_error() from exc
 
 
 @router.get("/workspace/{customer_id}", response_model=WorkspaceResponse)
@@ -112,23 +139,11 @@ async def shopify_callback(request: Request) -> RedirectResponse:
             raise HTTPException(status_code=400, detail="Missing Shopify authorization parameters")
         state_data = consume_oauth_state(state, shop_domain)
         token_data = exchange_code(shop_domain, code)
-
-        # Persist the installation before any optional integration work. This
-        # keeps a successful Shopify authorization from being reported as a
-        # failed connection just because webhook setup is unavailable.
         save_installation(state_data["business_id"], shop_domain, token_data)
-
-        # Webhooks are useful for keeping the workspace fresh, but they are not
-        # required to establish the store connection or perform the initial
-        # import. A webhook configuration problem must not undo a valid OAuth
-        # installation.
         try:
             register_webhooks(shop_domain, token_data["access_token"])
         except Exception as exc:
             logger.warning("Shopify webhook registration skipped after successful connection: %s", exc)
-
-        # Initial sync remains a required step because Known should only show a
-        # connected workspace once real Shopify data has been imported.
         sync_shop(state_data["business_id"], shop_domain)
         return RedirectResponse(url=f"{frontend}/?shopify=connected", status_code=303)
     except HTTPException as exc:
@@ -162,7 +177,6 @@ async def shopify_webhook(request: Request) -> dict[str, str]:
         webhook_complete(webhook_id)
     except Exception as exc:
         webhook_fail(webhook_id, str(exc))
-        # Return non-2xx so Shopify can retry a transient failure.
         raise HTTPException(status_code=503, detail="Shopify change could not be synchronized") from exc
     return {"status": "accepted", "sync": "complete"}
 
