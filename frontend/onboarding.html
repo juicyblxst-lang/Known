@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Known — Welcome</title>
+  <link rel="stylesheet" href="./onboarding.css">
+</head>
+<body class="known-onboarding">
+  <main class="known-onboarding-shell">
+    <div class="known-onboarding-brand">Known</div>
+    <div class="known-onboarding-eyebrow">SUPPORT WORKSPACE</div>
+    <h1>Welcome to Known.</h1>
+    <p class="known-onboarding-intro">Let's get your support workspace ready. Start with the way your customers already reach you, or bring your existing customer history into Known.</p>
+
+    <section class="known-onboarding-options" aria-label="Known setup options">
+      <button class="known-option" id="connect-email" type="button">
+        <span><span class="known-option-title">Connect your support inbox</span><span class="known-option-copy">Connect the inbox your customers already use for support.</span></span>
+        <span class="known-option-arrow">→</span>
+      </button>
+      <button class="known-option" id="import-csv" type="button">
+        <span><span class="known-option-title">Import your existing customers</span><span class="known-option-copy">Bring your customer and order history into Known with a CSV.</span></span>
+        <span class="known-option-arrow">+</span>
+      </button>
+      <button class="known-option" id="shopify-coming-soon" type="button" disabled aria-disabled="true">
+        <span><span class="known-option-title">Shopify <span class="known-option-badge">Coming soon</span></span><span class="known-option-copy">Direct Shopify connection is being prepared.</span></span>
+        <span class="known-option-arrow">→</span>
+      </button>
+    </section>
+  </main>
+
+  <section class="known-onboarding-modal" id="email-modal" hidden aria-modal="true" role="dialog" aria-labelledby="email-title">
+    <div class="known-onboarding-dialog">
+      <h2 id="email-title">Connect your support inbox</h2>
+      <p>Enter the email address your customers use to contact your business. We'll use it to identify the support inbox you want to connect.</p>
+      <label for="support-email">Support email</label>
+      <input id="support-email" type="email" autocomplete="email" placeholder="support@yourstore.com">
+      <div class="known-onboarding-actions"><button class="secondary" id="email-cancel" type="button">Cancel</button><button id="email-continue" type="button">Continue</button></div>
+      <div class="known-onboarding-status" id="email-status" role="status"></div>
+    </div>
+  </section>
+
+  <section class="known-onboarding-modal" id="csv-modal" hidden aria-modal="true" role="dialog" aria-labelledby="csv-title">
+    <div class="known-onboarding-dialog">
+      <h2 id="csv-title">Import your customers</h2>
+      <p>Choose a CSV exported from your ecommerce platform. Known will inspect the file before anything is imported.</p>
+      <label class="known-dropzone" for="csv-file"><strong>+ Choose CSV file</strong><span>Customer or order export · CSV only</span></label>
+      <input class="known-import-input" id="csv-file" type="file" accept=".csv,text/csv">
+      <div class="known-import-summary" id="csv-summary" hidden></div>
+      <div class="known-onboarding-actions"><button class="secondary" id="csv-cancel" type="button">Cancel</button><button id="csv-continue" type="button" disabled>Continue</button></div>
+      <div class="known-onboarding-status" id="csv-status" role="status"></div>
+    </div>
+  </section>
+
+  <script>
+    const emailModal=document.querySelector('#email-modal');
+    const csvModal=document.querySelector('#csv-modal');
+    const open=(el)=>{el.hidden=false};
+    const close=(el)=>{el.hidden=true};
+    document.querySelector('#connect-email').addEventListener('click',()=>open(emailModal));
+    document.querySelector('#import-csv').addEventListener('click',()=>open(csvModal));
+    document.querySelector('#email-cancel').addEventListener('click',()=>close(emailModal));
+    document.querySelector('#csv-cancel').addEventListener('click',()=>close(csvModal));
+    document.querySelector('#email-continue').addEventListener('click',()=>{
+      const email=document.querySelector('#support-email').value.trim();
+      const status=document.querySelector('#email-status');
+      if(!email){status.textContent='Enter your support email to continue.';return}
+      status.textContent='Support inbox setup is ready for the next connection step.';
+    });
+    document.querySelector('#csv-file').addEventListener('change',async(event)=>{
+      const file=event.target.files?.[0];
+      const summary=document.querySelector('#csv-summary');
+      const button=document.querySelector('#csv-continue');
+      const status=document.querySelector('#csv-status');
+      if(!file){button.disabled=true;summary.hidden=true;return}
+      if(!file.name.toLowerCase().endsWith('.csv')){status.textContent='Please choose a CSV file.';button.disabled=true;return}
+      const text=await file.text();
+      const lines=text.split(/\r?\n/).filter(Boolean);
+      const headers=(lines[0]||'').split(',').map(value=>value.trim().replace(/^"|"$/g,''));
+      const lower=headers.map(value=>value.toLowerCase());
+      const email=lower.some(value=>value==='email'||value.includes('email'));
+      const name=lower.some(value=>value.includes('first name')||value.includes('last name')||value==='name'||value.includes('customer'));
+      summary.hidden=false;
+      summary.innerHTML=`<strong>${file.name}</strong><br>${Math.max(lines.length-1,0).toLocaleString()} data rows detected<br>Email column: ${email?'detected':'not detected'}<br>Customer identity fields: ${name?'detected':'review needed'}`;
+      status.textContent='File inspected. The import step will use the existing customer data model.';
+      button.disabled=false;
+    });
+    document.querySelector('#csv-continue').addEventListener('click',()=>{document.querySelector('#csv-status').textContent='CSV import is ready for backend ingestion.'});
+  </script>
+</body>
+</html>
