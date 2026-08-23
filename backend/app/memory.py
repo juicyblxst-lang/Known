@@ -122,7 +122,7 @@ class SibylMemory:
             if client is not None:
                 self._close(client)
 
-    def remember(self, business_id: str, customer_id: str, content: str, memory_type: str = "customer_preference") -> tuple[bool, str]:
+    def remember(self, business_id: str, customer_id: str, content: str, memory_type: str = "customer_history") -> tuple[bool, str]:
         if not content.strip():
             return False, "Sibyl memory content is empty"
         client = None
@@ -148,3 +148,36 @@ class SibylMemory:
         finally:
             if client is not None:
                 self._close(client)
+
+    def import_customer_history(self, business_id: str, customers: list[dict[str, Any]], orders: list[dict[str, Any]]) -> dict[str, int]:
+        """Materialize the imported CSV into per-customer long-term memory."""
+        orders_by_customer: dict[str, list[dict[str, Any]]] = {}
+        for order in orders:
+            orders_by_customer.setdefault(str(order.get("customer_id", "")), []).append(order)
+
+        memories_written = 0
+        for customer in customers:
+            customer_id = str(customer["id"])
+            customer_orders = orders_by_customer.get(customer_id, [])
+            lines = [
+                f"Customer: {customer.get('name') or 'Unknown'}",
+                f"Email: {customer.get('email') or 'Unknown'}",
+                f"Tier: {customer.get('tier') or 'standard'}",
+            ]
+            if customer_orders:
+                lines.append("Order history:")
+                for order in customer_orders:
+                    items = ", ".join(
+                        f"{item.get('name') or 'Item'} x{item.get('quantity', 1)}"
+                        for item in (order.get("items") or [])
+                    ) or "No line items"
+                    lines.append(
+                        f"- {order.get('id')}: {items}; status={order.get('status') or 'unknown'}; total={order.get('total', 0)}"
+                    )
+            content = "\n".join(lines)
+            ok, error = self.remember(business_id, customer_id, content, "customer_history")
+            if not ok:
+                raise RuntimeError(error)
+            memories_written += 1
+
+        return {"customers": len(customers), "memories": memories_written}
