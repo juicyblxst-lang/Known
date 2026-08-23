@@ -7,54 +7,118 @@
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <div id="app">
+  <div id="app" class="app-shell">
     <aside class="sidebar">
       <div class="brand">Known</div>
-      <div class="label">CUSTOMERS</div>
-      <div class="customer-list-empty">Loading customers…</div>
-      <div class="sidebar-foot">Memory-first support</div>
+
+      <nav class="primary-nav" aria-label="Workspace navigation">
+        <button class="nav-item active" data-view="overview" type="button"><span class="nav-icon">▦</span>Overview</button>
+        <button class="nav-item" data-view="customers" type="button"><span class="nav-icon">♙</span>Customers</button>
+        <button class="nav-item" data-view="inbox" type="button"><span class="nav-icon">▢</span>Inbox</button>
+        <button class="nav-item" data-view="settings" type="button"><span class="nav-icon">⚙</span>Settings</button>
+      </nav>
+
+      <div class="sidebar-divider"></div>
+      <div class="sidebar-foot">
+        <button id="profile-button" class="profile" type="button" aria-expanded="false">
+          <span id="profile-avatar" class="profile-avatar">K</span>
+          <span class="profile-copy"><strong id="profile-name">Account</strong><small id="profile-email">—</small></span>
+          <span class="profile-chevron">⌄</span>
+        </button>
+        <div id="profile-menu" class="profile-menu" hidden>
+          <button id="logout-button" type="button">Sign out</button>
+        </div>
+      </div>
     </aside>
+
     <main class="main">
-      <header>
-        <div>
-          <div class="eyebrow">CUSTOMER WORKSPACE</div>
-          <h1>Customer</h1>
-          <p>Select a customer to begin.</p>
-        </div>
-        <div class="connection"><i></i> Checking connection</div>
+      <header class="topbar">
+        <div class="breadcrumbs"><span>Workspace</span><b>/</b><strong id="view-title">Overview</strong></div>
+        <div class="topbar-actions"><span id="connection" class="connection"><i></i>Connected</span></div>
       </header>
-      <section class="layout">
-        <div class="conversation panel">
-          <div class="panel-head"><span>Conversation</span><span id="session">No session</span></div>
-          <div id="messages" class="messages">
-            <div class="empty-state">No conversation loaded.</div>
+
+      <section id="view-overview" class="view active-view">
+        <div class="page-head overview-head">
+          <div>
+            <div id="today-label" class="eyebrow">TODAY</div>
+            <h1 id="greeting">Good morning.</h1>
+            <p>A quiet view of what Known knows about your customers.</p>
           </div>
-          <form id="composer">
-            <input id="message" autocomplete="off" placeholder="Select a customer…" disabled />
-            <button disabled>Send</button>
-          </form>
         </div>
-        <aside class="context">
-          <section class="panel">
-            <div class="panel-head">Customer</div>
-            <div class="context-body">
-              <h2>Customer</h2>
-              <p>No customer selected.</p>
-              <dl><dt>Email</dt><dd>—</dd><dt>Customer ID</dt><dd>—</dd></dl>
+
+        <div class="stat-grid">
+          <article class="stat-card"><span>Customers with memory</span><strong id="stat-customers">—</strong><small>Imported customer records</small></article>
+          <article class="stat-card"><span>Customer history</span><strong id="stat-history">—</strong><small>Available to Known</small></article>
+          <article class="stat-card"><span>Inbox</span><strong id="stat-inbox">—</strong><small>Support source status</small></article>
+          <article class="stat-card"><span>Last import</span><strong id="stat-import">—</strong><small id="stat-import-detail">No import recorded</small></article>
+        </div>
+
+        <div class="dashboard-grid">
+          <section class="panel activity-card">
+            <div class="panel-head"><span>Recent activity</span><button class="text-button" data-view="customers" type="button">View customers →</button></div>
+            <div id="recent-activity" class="activity-body"></div>
+          </section>
+          <section class="panel coverage-card">
+            <div class="panel-head"><span>Memory coverage</span><span class="panel-mark">◫</span></div>
+            <div class="coverage-body">
+              <div class="coverage-row"><span class="coverage-icon">♙</span><div><strong>Customer records</strong><small id="coverage-customers">Waiting for a data source</small></div><b id="coverage-customers-count">—</b></div>
+              <div class="coverage-row"><span class="coverage-icon">▢</span><div><strong>Conversation context</strong><small>Connect your support inbox when ready</small></div><b>—</b></div>
+              <div class="coverage-row"><span class="coverage-icon">✣</span><div><strong>Useful memories</strong><small>Built from customer history</small></div><b id="coverage-memory">Ready</b></div>
             </div>
           </section>
-          <section class="panel">
-            <div class="panel-head">Orders</div>
-            <div class="context-body"><div class="empty-state">No customer selected.</div></div>
+        </div>
+
+        <section class="panel setup-card">
+          <div class="panel-head"><span>Keep building your customer memory</span><span class="setup-status">V1 workspace</span></div>
+          <div class="setup-body">
+            <div><strong>Your customer history is the starting point.</strong><p>Browse imported customers now. Inbox connections and richer conversation context can be added as the workspace grows.</p></div>
+            <button class="secondary-button" data-view="customers" type="button">Browse customers</button>
+          </div>
+        </section>
+      </section>
+
+      <section id="view-customers" class="view" hidden>
+        <div class="page-head customers-head">
+          <div><div class="eyebrow">CUSTOMER DIRECTORY</div><h1>Customers</h1><p>Customer records imported into Known.</p></div>
+          <div class="customer-count"><strong id="customer-count">0</strong><span>customers</span></div>
+        </div>
+        <div class="customer-layout">
+          <section class="panel directory-card">
+            <div class="directory-toolbar"><label class="search-box"><span>⌕</span><input id="customer-search" type="search" placeholder="Search customers" autocomplete="off" /></label></div>
+            <div id="customer-directory" class="directory-list"></div>
           </section>
-          <section class="panel memory-panel">
-            <div class="panel-head">Relevant memory <span class="memory-count">0</span></div>
-            <div class="context-body">
-              <div class="empty-state">No memory loaded.</div>
-              <small class="source">Sibyl Memory</small>
+          <section class="customer-detail panel">
+            <div class="panel-head"><span>Customer workspace</span><span id="session">No session</span></div>
+            <div class="customer-detail-body">
+              <div class="customer-summary"><span id="detail-avatar" class="detail-avatar">—</span><div><h2 id="detail-name">Select a customer</h2><p id="detail-meta">Customer information will appear here.</p></div></div>
+              <div class="detail-sections">
+                <section><div class="section-label">Customer</div><dl><dt>Email</dt><dd id="detail-email">—</dd><dt>Customer ID</dt><dd id="detail-id">—</dd></dl></section>
+                <section><div class="section-label">Orders</div><div id="detail-orders" class="orders-list"><div class="empty-state">Select a customer to view history.</div></div></section>
+                <section><div class="section-label">Relevant memory <span id="memory-count" class="memory-count">0</span></div><div id="detail-memory" class="memory-list"><div class="empty-state">Select a customer to view memory.</div></div></section>
+              </div>
             </div>
           </section>
-        </aside>
+        </div>
+      </section>
+
+      <section id="view-inbox" class="view" hidden>
+        <div class="page-head"><div><div class="eyebrow">SUPPORT INBOX</div><h1>Inbox</h1><p>New customer conversations will appear here once your support inbox is connected.</p></div></div>
+        <section class="panel empty-page"><div class="empty-icon">▢</div><h2>Your inbox is ready for context.</h2><p>Known will bring new support emails into the same customer memory workspace.</p><span class="coming-label">Inbox connection coming next</span></section>
+      </section>
+
+      <section id="view-settings" class="view" hidden>
+        <div class="page-head"><div><div class="eyebrow">WORKSPACE SETTINGS</div><h1>Settings</h1><p>Choose which workspace events should notify you.</p></div></div>
+        <section class="panel settings-card">
+          <div class="settings-row"><div><strong>Import finished</strong><p>Notify me when a customer import has completed.</p></div><label class="switch"><input id="notify-import" type="checkbox" checked /><span></span></label></div>
+          <div class="settings-row"><div><strong>New conversations</strong><p>Notify me when a new support email or conversation arrives.</p></div><label class="switch"><input id="notify-conversations" type="checkbox" checked /><span></span></label></div>
+        </section>
+      </section>
+
+      <section id="view-conversation" class="view" hidden>
+        <div class="page-head"><div><div class="eyebrow">CUSTOMER WORKSPACE</div><h1 id="conversation-title">Customer</h1><p id="conversation-meta">Select a customer to begin.</p></div><button id="new-session" class="secondary-button" type="button">New conversation</button></div>
+        <div class="conversation-layout">
+          <section class="panel conversation-card"><div class="panel-head"><span>Conversation</span><span id="conversation-session">No session</span></div><div id="messages" class="messages"><div class="empty-state">No conversation loaded.</div></div><form id="composer"><input id="message" autocomplete="off" placeholder="Reply to customer…" disabled /><button disabled>Send</button></form></section>
+        </div>
       </section>
     </main>
   </div>
