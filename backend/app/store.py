@@ -28,6 +28,16 @@ class StructuredStore:
         data = response.json()
         return data if isinstance(data, list) else []
 
+    def _post_many(self, table: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not self.configured:
+            raise RuntimeError("Structured backend is not configured")
+        if not rows:
+            return []
+        response = httpx.post(f"{self.url}/rest/v1/{table}", params={"on_conflict": "id"}, headers={**self._headers(), "Prefer": "resolution=merge-duplicates,return=representation"}, json=rows, timeout=20)
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, list) else []
+
     def customers(self, business_id: str) -> list[dict[str, Any]]:
         return self._get("customers", {"business_id": f"eq.{business_id}", "select": "id,name,email,tier", "order": "name.asc"})
 
@@ -44,22 +54,18 @@ class StructuredStore:
             params["business_id"] = f"eq.{business_id}"
         return self._get("orders", params)
 
+    def import_csv_records(self, business_id: str, customers: list[dict[str, Any]], orders: list[dict[str, Any]]) -> dict[str, int]:
+        customer_rows = [{**row, "business_id": business_id} for row in customers]
+        order_rows = [{**row, "business_id": business_id} for row in orders]
+        imported_customers = self._post_many("customers", customer_rows)
+        imported_orders = self._post_many("orders", order_rows)
+        return {"customers": len(imported_customers), "orders": len(imported_orders)}
+
     def update_order_status(self, order_id: str, customer_id: str, business_id: str, status: str) -> dict[str, Any]:
-        """Perform a real tenant-scoped order mutation through Supabase REST."""
         if not self.configured:
             raise RuntimeError("Structured backend is not configured")
-        params = {
-            "id": f"eq.{order_id}",
-            "customer_id": f"eq.{customer_id}",
-            "business_id": f"eq.{business_id}",
-        }
-        response = httpx.patch(
-            f"{self.url}/rest/v1/orders",
-            params=params,
-            headers={**self._headers(), "Prefer": "return=representation"},
-            json={"status": status},
-            timeout=10,
-        )
+        params = {"id": f"eq.{order_id}", "customer_id": f"eq.{customer_id}", "business_id": f"eq.{business_id}"}
+        response = httpx.patch(f"{self.url}/rest/v1/orders", params=params, headers={**self._headers(), "Prefer": "return=representation"}, json={"status": status}, timeout=10)
         response.raise_for_status()
         rows = response.json()
         if not rows:
