@@ -6,7 +6,7 @@ from pathlib import Path
 import httpx
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import router
@@ -73,7 +73,11 @@ def get_session(session_id:str,customer_id:str,auth:AuthContext=Depends(require_
     return {"session_id":session.id,"customer_id":session.customer_id,"messages":[m.model_dump() for m in session.messages],"created_at":session.created_at,"updated_at":session.updated_at,"persistence":"supabase"}
 
 FRONTEND_DIR=Path(__file__).resolve().parents[2]/"frontend"
-if FRONTEND_DIR.exists(): app.mount("/",StaticFiles(directory=FRONTEND_DIR,html=True),name="frontend")
+if FRONTEND_DIR.exists():
+    @app.get("/", include_in_schema=False)
+    def landing() -> FileResponse:
+        return FileResponse(FRONTEND_DIR / "landing.html")
+    app.mount("/",StaticFiles(directory=FRONTEND_DIR,html=True),name="frontend")
 else:
     @app.get("/")
     def frontend_unavailable()->RedirectResponse: return RedirectResponse(url="/health")
