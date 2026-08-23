@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Customer(BaseModel):
@@ -26,10 +26,21 @@ class Message(BaseModel):
 
 
 class SupportRequest(BaseModel):
-    """Browser input; authoritative customer/order data is resolved by FastAPI."""
-    customer_id: str
+    """Accept browser identifiers or an already-resolved customer context."""
+    customer_id: str | None = None
+    customer: Customer | None = None
     message: str = Field(min_length=1, max_length=12000)
     conversation_id: str | None = None
+    conversation: list[Message] = Field(default_factory=list)
+    orders: list[Order] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_customer_reference(self) -> "SupportRequest":
+        if self.customer_id is None and self.customer is None:
+            raise ValueError("customer_id or customer is required")
+        if self.customer_id is None and self.customer is not None:
+            self.customer_id = self.customer.id
+        return self
 
 
 class SupportContextRequest(BaseModel):
