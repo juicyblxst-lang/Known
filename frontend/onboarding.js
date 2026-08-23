@@ -46,7 +46,7 @@ import { getSession, signOut } from "./auth.js";
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Import failed");
       status.textContent = `Imported ${Number(data.customers || 0).toLocaleString()} customers and ${Number(data.orders || 0).toLocaleString()} orders.`;
-      setTimeout(() => { window.location.href = "./index.html"; }, 500);
+      setTimeout(() => { window.location.href = "./index.html?imported=1"; }, 500);
     } catch (error) { status.textContent = error.message || "Import failed."; csvButton.disabled = false; }
   };
 })();
