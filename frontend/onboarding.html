@@ -12,21 +12,12 @@
     <div class="known-onboarding-eyebrow">SUPPORT WORKSPACE</div>
     <h1>Welcome to Known.</h1>
     <p class="known-onboarding-intro">Let's get your support workspace ready. Start with the way your customers already reach you, or bring your existing customer history into Known.</p>
-
     <section class="known-onboarding-options" aria-label="Known setup options">
-      <button class="known-option" id="connect-email" type="button">
-        <span><span class="known-option-title">Connect your support inbox</span><span class="known-option-copy">Connect the inbox your customers already use for support.</span></span>
-        <span class="known-option-arrow">→</span>
-      </button>
-      <button class="known-option" id="import-csv" type="button">
-        <span><span class="known-option-title">Import your existing customers</span><span class="known-option-copy">Bring your customer and order history into Known with a CSV.</span></span>
-        <span class="known-option-arrow">+</span>
-      </button>
-      <button class="known-option" id="shopify-coming-soon" type="button" disabled aria-disabled="true">
-        <span><span class="known-option-title">Shopify <span class="known-option-badge">Coming soon</span></span><span class="known-option-copy">Direct Shopify connection is being prepared.</span></span>
-        <span class="known-option-arrow">→</span>
-      </button>
+      <button class="known-option" id="connect-email" type="button"><span><span class="known-option-title">Connect your support inbox</span><span class="known-option-copy">Connect the inbox your customers already use for support.</span></span><span class="known-option-arrow">→</span></button>
+      <button class="known-option" id="import-csv" type="button"><span><span class="known-option-title">Import your existing customers</span><span class="known-option-copy">Bring your customer and order history into Known with a CSV.</span></span><span class="known-option-arrow">+</span></button>
+      <button class="known-option" id="shopify-coming-soon" type="button" disabled aria-disabled="true"><span><span class="known-option-title">Shopify <span class="known-option-badge">Coming soon</span></span><span class="known-option-copy">Direct Shopify connection is being prepared.</span></span><span class="known-option-arrow">→</span></button>
     </section>
+    <button id="sign-out" type="button" style="margin-top:28px;border:0;background:transparent;color:#69736d;font:11px Inter,ui-sans-serif,system-ui,sans-serif;cursor:pointer">Sign out</button>
   </main>
 
   <section class="known-onboarding-modal" id="email-modal" hidden aria-modal="true" role="dialog" aria-labelledby="email-title">
@@ -52,40 +43,18 @@
     </div>
   </section>
 
+  <script type="module" src="./onboarding.js"></script>
   <script>
     const emailModal=document.querySelector('#email-modal');
     const csvModal=document.querySelector('#csv-modal');
-    const open=(el)=>{el.hidden=false};
-    const close=(el)=>{el.hidden=true};
+    const open=(el)=>{el.hidden=false}; const close=(el)=>{el.hidden=true};
     document.querySelector('#connect-email').addEventListener('click',()=>open(emailModal));
     document.querySelector('#import-csv').addEventListener('click',()=>open(csvModal));
     document.querySelector('#email-cancel').addEventListener('click',()=>close(emailModal));
     document.querySelector('#csv-cancel').addEventListener('click',()=>close(csvModal));
-    document.querySelector('#email-continue').addEventListener('click',()=>{
-      const email=document.querySelector('#support-email').value.trim();
-      const status=document.querySelector('#email-status');
-      if(!email){status.textContent='Enter your support email to continue.';return}
-      status.textContent='Support inbox setup is ready for the next connection step.';
-    });
-    document.querySelector('#csv-file').addEventListener('change',async(event)=>{
-      const file=event.target.files?.[0];
-      const summary=document.querySelector('#csv-summary');
-      const button=document.querySelector('#csv-continue');
-      const status=document.querySelector('#csv-status');
-      if(!file){button.disabled=true;summary.hidden=true;return}
-      if(!file.name.toLowerCase().endsWith('.csv')){status.textContent='Please choose a CSV file.';button.disabled=true;return}
-      const text=await file.text();
-      const lines=text.split(/\r?\n/).filter(Boolean);
-      const headers=(lines[0]||'').split(',').map(value=>value.trim().replace(/^"|"$/g,''));
-      const lower=headers.map(value=>value.toLowerCase());
-      const email=lower.some(value=>value==='email'||value.includes('email'));
-      const name=lower.some(value=>value.includes('first name')||value.includes('last name')||value==='name'||value.includes('customer'));
-      summary.hidden=false;
-      summary.innerHTML=`<strong>${file.name}</strong><br>${Math.max(lines.length-1,0).toLocaleString()} data rows detected<br>Email column: ${email?'detected':'not detected'}<br>Customer identity fields: ${name?'detected':'review needed'}`;
-      status.textContent='File inspected. The import step will use the existing customer data model.';
-      button.disabled=false;
-    });
-    document.querySelector('#csv-continue').addEventListener('click',()=>{document.querySelector('#csv-status').textContent='CSV import is ready for backend ingestion.'});
+    document.querySelector('#email-continue').addEventListener('click',()=>{const email=document.querySelector('#support-email').value.trim();const status=document.querySelector('#email-status');if(!email){status.textContent='Enter your support email to continue.';return}status.textContent='Support inbox setup is ready for the connection step.'});
+    document.querySelector('#csv-file').addEventListener('change',async(event)=>{const file=event.target.files?.[0],summary=document.querySelector('#csv-summary'),button=document.querySelector('#csv-continue'),status=document.querySelector('#csv-status');if(!file){button.disabled=true;summary.hidden=true;return}if(!file.name.toLowerCase().endsWith('.csv')){status.textContent='Please choose a CSV file.';button.disabled=true;return}const text=await file.text(),lines=text.split(/\r?\n/).filter(Boolean),headers=(lines[0]||'').split(',').map(value=>value.trim().replace(/^"|"$/g,'')),lower=headers.map(value=>value.toLowerCase()),email=lower.some(value=>value==='email'||value.includes('email')),name=lower.some(value=>value.includes('first name')||value.includes('last name')||value==='name'||value.includes('customer'));summary.hidden=false;summary.innerHTML=`<strong>${file.name}</strong><br>${Math.max(lines.length-1,0).toLocaleString()} data rows detected<br>Email column: ${email?'detected':'not detected'}<br>Customer identity fields: ${name?'detected':'review needed'}`;status.textContent='File inspected. Nothing has been imported yet.';button.disabled=false});
+    document.querySelector('#csv-continue').addEventListener('click',()=>{document.querySelector('#csv-status').textContent='CSV import backend is not connected yet; no customer data was written.'});
   </script>
 </body>
 </html>
