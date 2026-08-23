@@ -10,16 +10,24 @@
   <div id="app">
     <aside class="sidebar">
       <div class="brand">Known</div>
-      <div class="label">CUSTOMERS</div>
+      <div class="label">CUSTOMERS <span id="customer-count" class="sidebar-count">0</span></div>
       <div id="customer-list"></div>
       <div class="sidebar-foot">Memory-first support</div>
     </aside>
     <main class="main">
       <header>
-        <div><div class="eyebrow">CUSTOMER WORKSPACE</div><h1>Known</h1><p id="header-meta">Memory-backed customer support.</p></div>
-        <div class="connection"><i></i><span id="connection-status">Not connected</span></div>
+        <div><div class="eyebrow">CUSTOMER WORKSPACE</div><h1>Known</h1><p id="header-meta">Your customer history, ready for support.</p></div>
+        <div class="connection"><i></i><span id="connection-status">Customer memory ready</span></div>
       </header>
-      <section id="onboarding" class="onboarding panel" hidden></section>
+      <section id="workspace-empty" class="workspace-empty panel" hidden>
+        <div class="workspace-empty-inner">
+          <div class="ready-mark">✓</div>
+          <div class="eyebrow">MEMORY READY</div>
+          <h2>Your customer history is ready.</h2>
+          <p>Known has organized your imported customer and order history. Select a customer to see everything Known remembers about them.</p>
+          <div class="ready-stats"><div><strong id="empty-customer-count">0</strong><span>customers</span></div><div><strong id="empty-order-count">0</strong><span>orders</span></div></div>
+        </div>
+      </section>
       <section id="workspace" class="layout" hidden>
         <div class="conversation panel">
           <div class="panel-head"><span>Conversation</span><span id="session">No conversation yet</span></div>
@@ -27,13 +35,13 @@
           <form id="composer"><input id="message" autocomplete="off" placeholder="Reply to customer…" /><button>Send</button></form>
         </div>
         <aside class="context">
-          <section class="panel"><div class="panel-head">Customer</div><div class="context-body"><h2 id="customer-detail-name">Customer</h2><p id="customer-detail-tier"></p><dl><dt>Email</dt><dd id="customer-detail-email"></dd><dt>Customer ID</dt><dd id="customer-detail-id"></dd></dl></div></section>
-          <section class="panel"><div class="panel-head">Orders</div><div id="orders" class="context-body"><div class="empty-state">No orders.</div></div></section>
-          <section class="panel memory-panel"><div class="panel-head">Relevant memory <span class="memory-count">0</span></div><div id="memory" class="context-body"><div class="empty-state">No relevant memory found.</div><small class="source">Sibyl Memory</small></div></section>
+          <section class="panel customer-card"><div class="panel-head">Customer memory</div><div class="context-body"><div class="profile-row"><div id="customer-avatar" class="profile-avatar">C</div><div><h2 id="customer-detail-name">Customer</h2><p id="customer-detail-tier"></p></div></div><dl><dt>Email</dt><dd id="customer-detail-email"></dd><dt>Customer ID</dt><dd id="customer-detail-id"></dd></dl></div></section>
+          <section class="panel"><div class="panel-head">Order history</div><div id="orders" class="context-body"><div class="empty-state">No orders.</div></div></section>
+          <section class="panel memory-panel"><div class="panel-head">What Known remembers <span class="memory-count">0</span></div><div id="memory" class="context-body"><div class="empty-state">No relevant memory found.</div><small class="source">Sibyl Memory</small></div></section>
         </aside>
       </section>
     </main>
   </div>
-  <script type="module" src="./app.js?v=csv-workspace-1"></script>
+  <script type="module" src="./app.js?v=csv-workspace-2"></script>
 </body>
 </html>
