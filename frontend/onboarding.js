@@ -17,11 +17,13 @@ import { getSession, signOut } from "./auth.js";
   };
 
   let csvText = "";
+  let fileName = "";
   const csvButton = $("#csv-continue"), status = $("#csv-status"), summary = $("#csv-summary");
   $("#csv-file").onchange = async (event) => {
     const file = event.target.files?.[0];
     csvButton.disabled = true;
     if (!file) return;
+    fileName = file.name;
     if (!file.name.toLowerCase().endsWith(".csv")) { status.textContent = "Please choose a CSV file."; return; }
     csvText = await file.text();
     status.textContent = "Inspecting your CSV…";
@@ -54,8 +56,4 @@ import { getSession, signOut } from "./auth.js";
       setTimeout(() => { window.location.href = "./index.html?imported=1"; }, 500);
     } catch (error) { status.textContent = error.message || "Import failed"; csvButton.disabled = false; }
   };
-
-  let fileName = "";
-  const originalChange = $("#csv-file").onchange;
-  $("#csv-file").addEventListener("change", (event) => { fileName = event.target.files?.[0]?.name || "customer-history.csv"; }, { once: false });
 })();
