@@ -20,17 +20,32 @@ function initials(value) {
   return (text.includes("@") ? text.split("@")[0] : text).slice(0, 2).toUpperCase() || "K";
 }
 
-function formatCount(value) { return new Intl.NumberFormat().format(Number(value || 0)); }
-function formatDate(date = new Date()) { return new Intl.DateTimeFormat(undefined, { weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(date); }
-function greeting(hour) { return hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"; }
+function formatCount(value) {
+  return new Intl.NumberFormat().format(Number(value || 0));
+}
+
+function formatDate(date = new Date()) {
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  }).format(date);
+}
+
+function greeting(hour) {
+  return hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+}
 
 function openModal(id) {
   $("#modal-root").hidden = false;
   $$(".modal-card").forEach((modal) => { modal.hidden = modal.id !== id; });
 }
+
 function closeModal() {
   $("#modal-root").hidden = true;
   $$(".modal-card").forEach((modal) => { modal.hidden = true; });
+  currentImport = null;
 }
 
 function setConnection(connected, text = "Customer memory ready") {
@@ -42,19 +57,32 @@ function setConnection(connected, text = "Customer memory ready") {
 
 async function authenticatedFetch(path, options = {}) {
   if (!session) return null;
-  let response = await fetch(apiUrl(path), { ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${session.accessToken}` } });
+  const request = () => fetch(apiUrl(path), {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      Authorization: `Bearer ${session.accessToken}`,
+    },
+  });
+
+  let response = await request();
   if (response.status !== 401) return response;
+
   session = await getSession();
-  if (!session) { await signOut(); location.href = "./landing.html"; return null; }
-  return fetch(apiUrl(path), { ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${session.accessToken}` } });
+  if (!session) {
+    await signOut();
+    location.href = "./landing.html";
+    return null;
+  }
+  return request();
 }
 
 function switchView(view) {
-  const titles = { overview: "Overview", customers: "Customers", inbox: "Inbox", imported: "Imported", integration: "Integration", settings: "Settings" };
   $$(".view").forEach((node) => { node.hidden = node.id !== `view-${view}`; });
   $$(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   $("#search-results").hidden = true;
   window.scrollTo({ top: 0, behavior: "smooth" });
+  if (view === "overview") renderOverview();
   if (view === "imported") renderImportedFiles();
 }
 
@@ -66,6 +94,7 @@ function renderOverview() {
   $("#stat-customers").textContent = formatCount(customers.length);
   $("#stat-history").textContent = customers.length ? "Available" : "—";
   $("#stat-inbox").textContent = "Coming soon";
+
   const imports = getImportedFiles();
   const latest = imports[0];
   $("#stat-import").textContent = latest ? "Complete" : customers.length ? "Complete" : "—";
@@ -81,14 +110,20 @@ function renderOverview() {
 function getFilteredCustomers(query = $("#customer-search")?.value || "") {
   const value = query.trim().toLowerCase();
   if (!value) return customers;
-  return customers.filter((customer) => [customer.name, customer.email, customer.id, customer.tier].some((field) => String(field || "").toLowerCase().includes(value)));
+  return customers.filter((customer) => [customer.name, customer.email, customer.id, customer.tier]
+    .some((field) => String(field || "").toLowerCase().includes(value)));
 }
 
 function renderCustomerDirectory(list = customers) {
   const container = $("#customer-directory");
+  if (!container) return;
   $("#customer-count").textContent = formatCount(customers.length);
   container.innerHTML = "";
-  if (!list.length) { container.innerHTML = `<div class="empty-state">No customers match your search.</div>`; return; }
+  if (!list.length) {
+    container.innerHTML = `<div class="empty-state">No customers match your search.</div>`;
+    return;
+  }
+
   list.forEach((customer) => {
     const button = document.createElement("button");
     button.type = "button";
@@ -109,6 +144,7 @@ function renderCustomerDetail(data) {
   $("#detail-meta").textContent = [data.customer?.email, data.customer?.tier].filter(Boolean).join(" · ");
   $("#detail-email").textContent = data.customer?.email || "—";
   $("#detail-id").textContent = data.customer?.id || "—";
+
   const orderBody = $("#detail-orders");
   orderBody.innerHTML = "";
   const orders = data.orders || [];
@@ -123,6 +159,7 @@ function renderCustomerDetail(data) {
     row.querySelector("small").textContent = `$${Number(order.total || 0).toFixed(2)} · ${(order.items || []).map((item) => item?.name || item).join(", ") || "No items listed"}`;
     orderBody.appendChild(row);
   });
+
   const memoryBody = $("#detail-memory");
   memoryBody.innerHTML = "";
   const memories = data.memory || [];
@@ -136,13 +173,31 @@ function renderCustomerDetail(data) {
     article.querySelector("p").textContent = memory.content || "";
     memoryBody.appendChild(article);
   });
+
   renderCustomerDirectory(getFilteredCustomers());
 }
 
 async function selectCustomer(customer) {
+  if (!customer?.id) return;
   const response = await authenticatedFetch(`/api/workspace/${encodeURIComponent(customer.id)}`);
   if (!response) return;
-  if (!response.ok) { $("#detail-meta").textContent = "Unable to load this customer right now."; return; }
+  if (!response.ok) {
+    $("#detail-meta").textContent = "Unable to load this customer right now.";
+    return;
+  }
+  renderCustomerDetail(await response.json());
+  switchView("customers");
+}
+
+async function selectCustomerById(customerId) {
+  const customer = customers.find((item) => item.id === customerId);
+  if (customer) {
+    await selectCustomer(customer);
+    return;
+  }
+  const response = await authenticatedFetch(`/api/workspace/${encodeURIComponent(customerId)}`);
+  if (!response) return;
+  if (!response.ok) return;
   renderCustomerDetail(await response.json());
   switchView("customers");
 }
@@ -152,24 +207,35 @@ async function loadCustomers() {
   if (!response) return;
   if (!response.ok) throw new Error(`Unable to load customers (${response.status})`);
   customers = await response.json();
+  selectedCustomer = null;
   renderOverview();
   renderCustomerDirectory();
-  if (customers.length) await selectCustomer(customers[0]);
 }
 
 function getImportedFiles() {
-  try { return JSON.parse(localStorage.getItem("known.imported.files") || "[]"); } catch { return []; }
+  try {
+    return JSON.parse(localStorage.getItem("known.imported.files") || "[]");
+  } catch {
+    return [];
+  }
 }
+
 function saveImportedFile(file) {
   const existing = getImportedFiles().filter((item) => item.name !== file.name);
   existing.unshift({ ...file, importedAt: new Date().toISOString() });
   localStorage.setItem("known.imported.files", JSON.stringify(existing.slice(0, 20)));
 }
+
 function renderImportedFiles() {
   const list = $("#imported-list");
   const files = getImportedFiles();
   list.innerHTML = "";
-  if (!files.length) { list.innerHTML = `<div class="empty-page"><div class="empty-icon">↓</div><h2>No CSV imports recorded yet.</h2><p>Import your existing customer history and it will appear here.</p><button id="empty-import-button" class="primary-button" type="button">Import CSV</button></div>`; $("#empty-import-button").onclick = () => openModal("import-modal"); return; }
+  if (!files.length) {
+    list.innerHTML = `<div class="empty-page"><div class="empty-icon">↓</div><h2>No CSV imports recorded yet.</h2><p>Import your existing customer history and it will appear here.</p><button id="empty-import-button" class="primary-button" type="button">Import CSV</button></div>`;
+    $("#empty-import-button").onclick = () => openModal("import-modal");
+    return;
+  }
+
   files.forEach((file) => {
     const row = document.createElement("button");
     row.type = "button";
@@ -177,7 +243,11 @@ function renderImportedFiles() {
     row.innerHTML = `<span class="import-file-icon">CSV</span><span><strong></strong><small></small></span><span class="import-arrow">→</span>`;
     row.querySelector("strong").textContent = file.name;
     row.querySelector("small").textContent = `${formatCount(file.customers || 0)} customers · ${formatCount(file.orders || 0)} orders · imported ${new Date(file.importedAt).toLocaleDateString()}`;
-    row.onclick = () => { $("#import-confirm-copy").textContent = `${file.name} contains ${formatCount(file.customers || 0)} customer records. Show those records in Customers?`; currentImport = file; openModal("import-confirm-modal"); };
+    row.onclick = () => {
+      currentImport = file;
+      $("#import-confirm-copy").textContent = `${file.name} contains ${formatCount(file.customers || 0)} customer records. Show those records in Customers?`;
+      openModal("import-confirm-modal");
+    };
     list.appendChild(row);
   });
 }
@@ -204,40 +274,128 @@ function setupSettings() {
 }
 
 function setupNavigation() {
-  $$("[data-view]").forEach((button) => button.addEventListener("click", () => { switchView(button.dataset.view); closeSidebar(); }));
+  $$("[data-view]").forEach((button) => button.addEventListener("click", () => {
+    switchView(button.dataset.view);
+    closeSidebar();
+  }));
   $("#hamburger").onclick = () => openSidebar();
   $("#sidebar-close").onclick = () => closeSidebar();
   $("#sidebar-backdrop").onclick = () => closeSidebar();
   $("#back-button").onclick = () => openModal("confirm-modal");
-  $("#customer-back").onclick = () => switchView("overview");
+  $("#customer-back").onclick = () => openSidebar();
   $("#modal-backdrop").onclick = () => closeModal();
   $$("[data-close-modal]").forEach((button) => button.onclick = closeModal);
-  $("#confirm-logout").onclick = async () => { await signOut(); location.href = "./landing.html"; };
+  $("#confirm-logout").onclick = async () => {
+    await signOut();
+    location.href = "./landing.html";
+  };
   $("#shopify-coming").onclick = () => openModal("shopify-modal");
-  $("#import-confirm-yes").onclick = () => { closeModal(); switchView("customers"); if (currentImport) { const match = customers.find((customer) => customer.id === currentImport.firstCustomerId); if (match) selectCustomer(match); } };
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeModal(); });
+  $("#import-confirm-yes").onclick = async () => {
+    const imported = currentImport;
+    closeModal();
+    await loadCustomers();
+    switchView("customers");
+    if (imported?.firstCustomerId) await selectCustomerById(imported.firstCustomerId);
+  };
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeModal();
+  });
 }
 
-function openSidebar() { $("#sidebar").classList.add("open"); $("#sidebar-backdrop").hidden = false; }
-function closeSidebar() { $("#sidebar").classList.remove("open"); $("#sidebar-backdrop").hidden = true; }
+function openSidebar() {
+  $("#sidebar").classList.add("open");
+  $("#sidebar-backdrop").hidden = false;
+}
+
+function closeSidebar() {
+  $("#sidebar").classList.remove("open");
+  $("#sidebar-backdrop").hidden = true;
+}
 
 function setupSearch() {
   const input = $("#global-search");
   const results = $("#search-results");
-  const render = () => {
-    const query = input.value.trim().toLowerCase();
-    results.innerHTML = "";
-    if (!query) { results.hidden = true; return; }
-    const customerMatches = customers.filter((customer) => [customer.name, customer.email, customer.id].some((field) => String(field || "").toLowerCase().includes(query))).slice(0, 8);
-    const orderMatches = [];
-    if (!customerMatches.length && selectedCustomer) orderMatches.push(...(selectedCustomer.orders || []).filter((order) => String(order.id || "").toLowerCase().includes(query)).slice(0, 5));
-    if (!customerMatches.length && !orderMatches.length) { results.innerHTML = `<div class="search-empty">No customer or order found.</div>`; results.hidden = false; return; }
-    customerMatches.forEach((customer) => { const button = document.createElement("button"); button.type = "button"; button.className = "search-result"; button.innerHTML = `<strong></strong><small></small>`; button.querySelector("strong").textContent = customer.name || "Customer"; button.querySelector("small").textContent = customer.email || customer.id; button.onclick = () => { input.value = ""; results.hidden = true; selectCustomer(customer); }; results.appendChild(button); });
-    orderMatches.forEach((order) => { const button = document.createElement("button"); button.type = "button"; button.className = "search-result"; button.innerHTML = `<strong>Order ${order.id}</strong><small>Order history</small>`; button.onclick = () => { input.value = ""; results.hidden = true; switchView("customers"); }; results.appendChild(button); });
+  if (!input || !results) return;
+
+  let timer = null;
+  const renderEmpty = (text) => {
+    results.innerHTML = `<div class="search-empty"></div>`;
+    results.querySelector(".search-empty").textContent = text;
     results.hidden = false;
   };
-  input.addEventListener("input", render);
-  document.addEventListener("click", (event) => { if (!$(".topbar-left").contains(event.target)) results.hidden = true; });
+
+  const render = async () => {
+    const query = input.value.trim();
+    if (!query) {
+      results.hidden = true;
+      return;
+    }
+
+    results.innerHTML = `<div class="search-empty">Searching…</div>`;
+    results.hidden = false;
+
+    try {
+      const response = await authenticatedFetch(`/api/search?q=${encodeURIComponent(query)}`);
+      if (!response) return;
+      if (!response.ok) {
+        renderEmpty("Search is unavailable right now.");
+        return;
+      }
+      const data = await response.json();
+      const customerMatches = data.customers || [];
+      const orderMatches = data.orders || [];
+      if (!customerMatches.length && !orderMatches.length) {
+        renderEmpty("No customer or order found.");
+        return;
+      }
+
+      results.innerHTML = "";
+      customerMatches.forEach((customer) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "search-result";
+        const strong = document.createElement("strong");
+        const small = document.createElement("small");
+        strong.textContent = customer.name || "Customer";
+        small.textContent = customer.email || customer.id || "Customer record";
+        button.append(strong, small);
+        button.onclick = async () => {
+          input.value = "";
+          results.hidden = true;
+          await selectCustomerById(customer.id);
+        };
+        results.appendChild(button);
+      });
+
+      orderMatches.forEach((order) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "search-result";
+        const strong = document.createElement("strong");
+        const small = document.createElement("small");
+        strong.textContent = `Order ${order.id || ""}`;
+        small.textContent = `Customer record · ${order.status || "unknown"}`;
+        button.append(strong, small);
+        button.onclick = async () => {
+          input.value = "";
+          results.hidden = true;
+          await selectCustomerById(order.customer_id);
+        };
+        results.appendChild(button);
+      });
+      results.hidden = false;
+    } catch {
+      renderEmpty("Search is unavailable right now.");
+    }
+  };
+
+  input.addEventListener("input", () => {
+    clearTimeout(timer);
+    timer = setTimeout(render, 180);
+  });
+  document.addEventListener("click", (event) => {
+    if (!$(".topbar-left").contains(event.target)) results.hidden = true;
+  });
 }
 
 function setupDashboardImport() {
@@ -247,45 +405,82 @@ function setupDashboardImport() {
   const next = $("#dashboard-csv-next");
   let csvText = "";
   let fileName = "";
+
   $("#new-import-button").onclick = () => openModal("import-modal");
+
   fileInput.onchange = async (event) => {
     const file = event.target.files?.[0];
     next.disabled = true;
     summary.hidden = true;
     if (!file) return;
+
     fileName = file.name;
-    if (!file.name.toLowerCase().endsWith(".csv")) { status.textContent = "Please choose a CSV file."; return; }
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      status.textContent = "Please choose a CSV file.";
+      return;
+    }
+
     csvText = await file.text();
     status.textContent = "Inspecting your CSV…";
     try {
-      const response = await authenticatedFetch("/api/imports/csv/inspect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ csv_text: csvText }) });
+      const response = await authenticatedFetch("/api/imports/csv/inspect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ csv_text: csvText }),
+      });
+      if (!response) return;
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Could not inspect CSV");
       summary.hidden = false;
       summary.innerHTML = `<strong>${fileName}</strong><br>${formatCount(data.row_count)} rows · ${formatCount(data.customer_count)} customers · ${formatCount(data.order_count)} orders`;
       status.textContent = "File inspected. Ready to import.";
       next.disabled = false;
-    } catch (error) { status.textContent = error.message || "Could not inspect CSV."; }
+    } catch (error) {
+      status.textContent = error.message || "Could not inspect CSV.";
+    }
   };
+
   next.onclick = async () => {
     if (!csvText) return;
     next.disabled = true;
     status.textContent = "Importing your customer history…";
     try {
-      const response = await authenticatedFetch("/api/imports/csv/commit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ csv_text: csvText }) });
+      const response = await authenticatedFetch("/api/imports/csv/commit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ csv_text: csvText }),
+      });
+      if (!response) return;
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Import failed");
-      saveImportedFile({ name: fileName, customers: data.customers || 0, orders: data.orders || 0 });
+      saveImportedFile({
+        name: fileName,
+        customers: data.customers || 0,
+        orders: data.orders || 0,
+        firstCustomerId: data.first_customer_id || null,
+      });
       status.textContent = `Imported ${formatCount(data.customers || 0)} customers and ${formatCount(data.orders || 0)} orders.`;
-      setTimeout(async () => { closeModal(); fileInput.value = ""; csvText = ""; await loadCustomers(); switchView("customers"); }, 350);
-    } catch (error) { status.textContent = error.message || "Import failed."; next.disabled = false; }
+      setTimeout(async () => {
+        closeModal();
+        fileInput.value = "";
+        csvText = "";
+        await loadCustomers();
+        switchView("customers");
+      }, 350);
+    } catch (error) {
+      status.textContent = error.message || "Import failed.";
+      next.disabled = false;
+    }
   };
 }
 
 async function bootstrap() {
   try {
     session = await getSession();
-    if (!session) { location.href = "./login.html"; return; }
+    if (!session) {
+      location.href = "./login.html";
+      return;
+    }
     setupNavigation();
     setupProfile();
     setupSettings();
@@ -295,6 +490,7 @@ async function bootstrap() {
     await loadCustomers();
     $("#customer-search").addEventListener("input", () => renderCustomerDirectory(getFilteredCustomers()));
     renderImportedFiles();
+    switchView("overview");
   } catch (error) {
     setConnection(false, "Unavailable");
     $("#recent-activity").innerHTML = `<div class="empty-state">${error.message || "Unable to initialize Known."}</div>`;
