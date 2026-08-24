@@ -1,0 +1,9 @@
+/* Landing navigation + mark polish; layered on top of the existing landing styles. */
+.landing-nav{position:sticky!important;top:0!important;z-index:200!important;background:rgba(248,249,246,.96)!important;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+.landing-brand .known-mark{position:relative;width:26px;height:26px;display:block;flex:none}
+.landing-brand .known-mark i,.window-brand .known-mark i{display:none}
+.landing-brand .known-mark:before,.window-brand .known-mark:before{content:"";position:absolute;inset:1px;border:1.5px solid #202925;border-radius:7px;transform:rotate(45deg);background:linear-gradient(135deg,transparent 43%,#202925 44% 49%,transparent 50% 56%,#202925 57% 62%,transparent 63%)}
+.window-brand .known-mark{position:relative;width:18px;height:18px;display:block;flex:none}
+.window-brand .known-mark:before{border-width:1px;border-radius:5px}
+@media(max-width:900px){.landing-nav{height:68px}.landing-shell{width:min(100% - 36px,700px)}.landing-actions{gap:18px}}
+@media(max-width:620px){.landing-nav{height:64px}.landing-shell{width:calc(100% - 28px)}.landing-nav-inner{gap:12px}.landing-brand{font-size:18px}.landing-brand .known-mark{width:23px;height:23px}.landing-actions{gap:10px}.landing-actions a:first-child{display:none}.landing-actions .landing-cta{padding:11px 13px;font-size:12px}}
