@@ -4,8 +4,12 @@
   .sidebar:not(.collapsed){transform:translateX(0)}
   .sidebar-top{padding-bottom:22px}
   .sidebar-close{display:grid!important}
+  .sidebar-backdrop{display:block;position:fixed;inset:0;background:rgba(21,32,43,.20);z-index:35}
+  .sidebar-backdrop[hidden]{display:none!important}
   .main{margin-left:0;padding:0 20px 36px}
   .topbar{height:64px;margin-bottom:24px}
+  .topbar-left{display:flex;align-items:center;flex:1;min-width:0}
+  #hamburger{display:grid!important;flex:none}
   .global-search{width:min(390px,68vw)}
   .search-results{left:0;width:min(390px,68vw)}
   .stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -15,11 +19,13 @@
   .directory-card{min-height:0}
   .directory-list{max-height:330px}
 }
+
 @media (max-width:620px){
   .main{padding:0 14px 28px}
-  .topbar{height:60px;margin-bottom:18px}
+  .topbar{height:60px;margin-bottom:18px;gap:8px}
+  .topbar-left{min-width:0}
+  #hamburger{width:34px;height:34px}
   .global-search{width:100%;max-width:none}
-  .topbar-left{width:100%}
   .topbar-right{flex:none}
   .top-profile span:last-child{display:none}
   .profile-avatar{width:30px;height:30px}
@@ -40,4 +46,9 @@
   .integration-row .secondary-button{grid-column:2;grid-row:1 / span 2}
   .settings-row{padding:17px}
   .modal-card{width:calc(100vw - 28px);padding:21px}
+}
+
+@media (min-width:901px){
+  #hamburger{display:none!important}
+  .sidebar-backdrop{display:none!important}
 }
