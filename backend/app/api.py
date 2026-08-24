@@ -42,6 +42,14 @@ async def get_customers(auth: AuthContext = Depends(require_auth)) -> list[dict]
         raise upstream_error()
 
 
+@router.get("/search")
+async def search_workspace(q: str = Query("", min_length=1, max_length=120), auth: AuthContext = Depends(require_auth)) -> dict[str, list[dict]]:
+    try:
+        return store.search(auth.business_id, q)
+    except (httpx.HTTPError, ValueError):
+        raise upstream_error()
+
+
 class CSVImportRequest(BaseModel):
     csv_text: str
 
