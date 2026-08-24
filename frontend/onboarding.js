@@ -50,7 +50,7 @@ import { getSession, signOut } from "./auth.js";
       let files = [];
       try { files = JSON.parse(localStorage.getItem("known.imported.files") || "[]"); } catch { files = []; }
       files = files.filter((item) => item.name !== fileName);
-      files.unshift({ name: fileName, customers: data.customers || 0, orders: data.orders || 0, importedAt: new Date().toISOString() });
+      files.unshift({ name: fileName, customers: data.customers || 0, orders: data.orders || 0, firstCustomerId: data.first_customer_id || null, importedAt: new Date().toISOString() });
       localStorage.setItem("known.imported.files", JSON.stringify(files.slice(0, 20)));
       status.textContent = `Imported ${Number(data.customers || 0).toLocaleString()} customers and ${Number(data.orders || 0).toLocaleString()} orders.`;
       setTimeout(() => { window.location.href = "./index.html?imported=1"; }, 500);
