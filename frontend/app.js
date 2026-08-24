@@ -5,16 +5,20 @@ function applyWorkspacePolish(){
   const close=document.querySelector('#sidebar-close');
   if(document.querySelector('.sidebar-note')) document.querySelector('.sidebar-note').remove();
 
-  // Replace the desktop collapse control so it never logs the user out.
+  // The sidebar arrow is a collapse control on every device. It must never log out.
   if(close && !close.dataset.responsiveBound){
     const replacement=close.cloneNode(true);
     replacement.setAttribute('aria-label','Collapse navigation');
+    replacement.setAttribute('title','Collapse navigation');
     replacement.dataset.responsiveBound='true';
     close.replaceWith(replacement);
-    replacement.addEventListener('click',()=>setSidebar(false));
+    replacement.addEventListener('click',(event)=>{
+      event.preventDefault();
+      event.stopPropagation();
+      setSidebar(false);
+    });
   }
 
-  // Keep the hamburger available to the responsive layer. CSS hides it on desktop.
   document.querySelector('#back-button')?.remove();
   document.querySelector('#connection')?.remove();
   document.querySelector('.setup-card')?.remove();
@@ -53,8 +57,6 @@ function bindResponsiveDrawer(){
   hamburger?.addEventListener('click',()=>setSidebar(true));
   backdrop?.addEventListener('click',()=>setSidebar(false));
 
-  // Any navigation item can open the drawer on mobile; tapping outside remains
-  // the explicit way to dismiss it without changing the current view.
   document.querySelectorAll('.nav-item').forEach(item=>{
     item.addEventListener('click',()=>{
       if(window.matchMedia('(max-width: 900px)').matches) setSidebar(true);
