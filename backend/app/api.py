@@ -52,6 +52,15 @@ async def search_workspace(q: str = Query("", min_length=1, max_length=120), aut
 
 class CSVImportRequest(BaseModel):
     csv_text: str
+    file_name: str | None = None
+
+
+@router.post("/imports")
+async def list_imports(auth: AuthContext = Depends(require_auth)) -> list[dict]:
+    try:
+        return store.imports(auth.business_id)
+    except (httpx.HTTPError, ValueError):
+        raise upstream_error()
 
 
 @router.post("/imports/csv/inspect")
@@ -68,10 +77,11 @@ async def commit_csv(request: CSVImportRequest, auth: AuthContext = Depends(requ
     try:
         result = inspect_and_build(request.csv_text)
         counts = store.import_csv_records(auth.business_id, result["customers"], result["orders"])
+        import_row = store.create_import(auth.business_id, request.file_name or "customer-import.csv", counts["customers"], counts["orders"])
         memory_counts = memory.import_customer_history(auth.business_id, result["customers"], result["orders"])
         if memory_counts["memories"] != len(result["customers"]):
             raise RuntimeError("Customer memory could not be fully initialized")
-        return {"status": "complete", **counts, **memory_counts, "memory_ready": True, "first_customer_id": result["customers"][0]["id"] if result["customers"] else None}
+        return {"status": "complete", **counts, **memory_counts, "memory_ready": True, "import_id": import_row.get("id"), "first_customer_id": result["customers"][0]["id"] if result["customers"] else None}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (httpx.HTTPError, RuntimeError) as exc:
@@ -146,7 +156,7 @@ async def shopify_callback(request: Request) -> RedirectResponse:
             raise HTTPException(status_code=400, detail="Shopify authorization was not completed")
         code, state = params.get("code"), params.get("state")
         if not code or not state:
-            raise HTTPException(status_code=400, detail="Missing Shopify authorization parameters")
+            raise HTTPException(status_code=400, detail="Missing Shopify OAuth parameters")
         state_data = consume_oauth_state(state, shop_domain)
         token_data = exchange_code(shop_domain, code)
         save_installation(state_data["business_id"], shop_domain, token_data)
@@ -174,31 +184,23 @@ async def shopify_webhook(request: Request) -> dict[str, str]:
     if not shop or not topic:
         raise HTTPException(status_code=400, detail="Missing Shopify webhook headers")
     claim = webhook_claim(webhook_id, shop, topic)
-    if claim == "processed":
-        return {"status": "duplicate"}
-    if claim == "processing":
-        return {"status": "accepted", "sync": "in_progress"}
+    if claim == "processed": return {"status": "duplicate"}
+    if claim == "processing": return {"status": "accepted", "sync": "in_progress"}
     current = installation_by_shop(shop)
     if not current:
         webhook_fail(webhook_id, "No active Known installation for Shopify store")
         return {"status": "ignored"}
     try:
-        sync_shop(current["business_id"], shop)
-        webhook_complete(webhook_id)
+        sync_shop(current["business_id"], shop); webhook_complete(webhook_id)
     except Exception as exc:
-        webhook_fail(webhook_id, str(exc))
-        raise HTTPException(status_code=503, detail="Shopify change could not be synchronized") from exc
+        webhook_fail(webhook_id, str(exc)); raise HTTPException(status_code=503, detail="Shopify change could not be synchronized") from exc
     return {"status": "accepted", "sync": "complete"}
 
 
 @router.get("/sessions/{session_id}")
 async def get_conversation_session(session_id: str, customer_id: str, auth: AuthContext = Depends(require_auth)) -> dict:
-    if not sessions.configured:
-        raise HTTPException(status_code=503, detail="Durable conversation persistence is not configured")
-    try:
-        session = sessions.get(session_id, customer_id, auth.business_id)
-    except (httpx.HTTPError, ValueError):
-        raise upstream_error()
-    if session is None:
-        raise HTTPException(status_code=404, detail="session not found")
+    if not sessions.configured: raise HTTPException(status_code=503, detail="Durable conversation persistence is not configured")
+    try: session = sessions.get(session_id, customer_id, auth.business_id)
+    except (httpx.HTTPError, ValueError): raise upstream_error()
+    if session is None: raise HTTPException(status_code=404, detail="session not found")
     return {"session_id": session.id, "customer_id": session.customer_id, "messages": [message.model_dump() for message in session.messages], "created_at": session.created_at, "updated_at": session.updated_at, "persistence": "supabase"}
