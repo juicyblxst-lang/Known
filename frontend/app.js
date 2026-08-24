@@ -28,5 +28,14 @@ function applyWorkspacePolish(){
     sessionStorage.removeItem('known.new-user');
   }
 }
+
+if(!document.querySelector('link[data-workspace-responsive]')){
+  const link=document.createElement('link');
+  link.rel='stylesheet';
+  link.href='./workspace-responsive.css?v=1';
+  link.dataset.workspaceResponsive='true';
+  document.head.appendChild(link);
+}
+
 setTimeout(applyWorkspacePolish,250);
 setTimeout(applyWorkspacePolish,900);
