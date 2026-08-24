@@ -71,7 +71,7 @@ async def commit_csv(request: CSVImportRequest, auth: AuthContext = Depends(requ
         memory_counts = memory.import_customer_history(auth.business_id, result["customers"], result["orders"])
         if memory_counts["memories"] != len(result["customers"]):
             raise RuntimeError("Customer memory could not be fully initialized")
-        return {"status": "complete", **counts, **memory_counts, "memory_ready": True}
+        return {"status": "complete", **counts, **memory_counts, "memory_ready": True, "first_customer_id": result["customers"][0]["id"] if result["customers"] else None}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (httpx.HTTPError, RuntimeError) as exc:
