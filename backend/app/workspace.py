@@ -15,7 +15,7 @@ class WorkspaceOrder(BaseModel):
     id: str
     status: str
     total: float = 0
-    items: list[str] = Field(default_factory=list)
+    items: list[dict[str, Any] | str] = Field(default_factory=list)
 
 
 class WorkspaceResponse(BaseModel):
