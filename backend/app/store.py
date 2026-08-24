@@ -41,6 +41,15 @@ class StructuredStore:
     def customers(self, business_id: str) -> list[dict[str, Any]]:
         return self._get("customers", {"business_id": f"eq.{business_id}", "select": "id,name,email,tier", "order": "name.asc"})
 
+    def search(self, business_id: str, query: str) -> dict[str, list[dict[str, Any]]]:
+        value = query.strip()
+        if not value:
+            return {"customers": [], "orders": []}
+        pattern = f"*{value}*"
+        customers = self._get("customers", {"business_id": f"eq.{business_id}", "or": f"name.ilike.{pattern},email.ilike.{pattern},id.ilike.{pattern}", "select": "id,name,email,tier", "limit": "8", "order": "name.asc"})
+        orders = self._get("orders", {"business_id": f"eq.{business_id}", "id": f"ilike.{pattern}", "select": "id,customer_id,status,total,items,created_at", "limit": "8", "order": "created_at.desc"})
+        return {"customers": customers, "orders": orders}
+
     def customer(self, customer_id: str, business_id: str | None = None) -> dict[str, Any] | None:
         params = {"id": f"eq.{customer_id}", "limit": "1"}
         if business_id:
