@@ -6,7 +6,7 @@ import { getSession, signOut } from "./auth.js";
   const $ = (s) => document.querySelector(s);
   const emailModal = $("#email-modal"), csvModal = $("#csv-modal");
   const open = (el) => { el.hidden = false; }, close = (el) => { el.hidden = true; };
-  $("#sign-out").onclick = async () => { await signOut(); location.href = "./login.html"; };
+  $("#sign-out").onclick = async () => { await signOut(); location.href = "./landing.html"; };
   $("#connect-email").onclick = () => open(emailModal);
   $("#import-csv").onclick = () => open(csvModal);
   $("#email-cancel").onclick = () => close(emailModal);
@@ -45,8 +45,17 @@ import { getSession, signOut } from "./auth.js";
       const response = await fetch("/api/imports/csv/commit", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` }, body: JSON.stringify({ csv_text: csvText }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Import failed");
+      let files = [];
+      try { files = JSON.parse(localStorage.getItem("known.imported.files") || "[]"); } catch { files = []; }
+      files = files.filter((item) => item.name !== fileName);
+      files.unshift({ name: fileName, customers: data.customers || 0, orders: data.orders || 0, importedAt: new Date().toISOString() });
+      localStorage.setItem("known.imported.files", JSON.stringify(files.slice(0, 20)));
       status.textContent = `Imported ${Number(data.customers || 0).toLocaleString()} customers and ${Number(data.orders || 0).toLocaleString()} orders.`;
       setTimeout(() => { window.location.href = "./index.html?imported=1"; }, 500);
-    } catch (error) { status.textContent = error.message || "Import failed."; csvButton.disabled = false; }
+    } catch (error) { status.textContent = error.message || "Import failed"; csvButton.disabled = false; }
   };
+
+  let fileName = "";
+  const originalChange = $("#csv-file").onchange;
+  $("#csv-file").addEventListener("change", (event) => { fileName = event.target.files?.[0]?.name || "customer-history.csv"; }, { once: false });
 })();
