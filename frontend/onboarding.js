@@ -12,9 +12,15 @@ import { getSession } from "./auth.js";
   $("#import-csv").onclick = () => open(csvModal);
   $("#email-cancel").onclick = () => close(emailModal);
   $("#csv-cancel").onclick = () => close(csvModal);
-  $("#email-continue").onclick = () => {
-    const email = $("#support-email").value.trim();
-    $("#email-status").textContent = email ? "Support inbox setup is ready for the connection step." : "Enter your support email to continue.";
+  $("#email-continue").onclick = async () => {
+    const button = $("#email-continue"), status = $("#email-status");
+    button.disabled = true; status.textContent = "Opening Google…";
+    try {
+      const response = await fetch("/api/gmail/connect", { headers: { Authorization: `Bearer ${session.accessToken}` } });
+      const data = await response.json();
+      if (!response.ok || !data.authorization_url) throw new Error(data.detail || "Gmail connection is not configured.");
+      location.href = data.authorization_url;
+    } catch (error) { status.textContent = error.message || "Unable to connect Gmail."; button.disabled = false; }
   };
   let csvText = "";
   let fileName = "";
