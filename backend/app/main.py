@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import secrets
 import httpx
-from fastapi import Depends,FastAPI,HTTPException,Query
+from fastapi import Depends,FastAPI,HTTPException,Query,Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse,RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -55,7 +55,7 @@ def gmail_poll(auth:AuthContext=Depends(require_auth)):
  try:return gmail_ingestor.poll(auth.business_id)
  except Exception as exc:raise HTTPException(502,'Gmail inbox processing failed') from exc
 @app.post('/api/internal/gmail/poll-all')
-def gmail_poll_all(x_known_cron_secret:str=Query('',alias='X-Known-Cron-Secret')):
+def gmail_poll_all(x_known_cron_secret:str|None=Header(default=None,alias='X-Known-Cron-Secret')):
  secret=os.getenv('KNOWN_GMAIL_CRON_SECRET','')
  if not secret or x_known_cron_secret!=secret:raise HTTPException(401,'Unauthorized')
  results=[]
