@@ -106,5 +106,34 @@ Rules:
         memory_type = str(decision.get("memory_type", "none"))
         if should_remember and memory_type != "none":
             memory_written, _ = self._remember(business_id, customer_id, str(should_remember), memory_type)
-        self._record_event(business_id, customer_id, "support_message", {"recommended_action": recommendation, "action": action, "memory_used": len(memories), "memory_influence": memory_influence, "memory_written": memory_written})
-        return SupportResponse(customer_id=customer_id, reply=reply, memories_used=memories, memory_written=memory_written, recommended_action=recommendation, action_executed=False, action_result=None, degraded_memory=False)
+
+        # Persist the actual support interaction as a customer-scoped memory event.
+        # Supabase remains the canonical conversation store; Sibyl retains the
+        # interaction so later memory retrieval can use what was actually discussed.
+        event_ok, _ = self._record_event(
+            business_id,
+            customer_id,
+            "support_message",
+            {
+                "message": request.message,
+                "reply": reply,
+                "recommended_action": recommendation,
+                "action": action,
+                "memory_used": len(memories),
+                "memory_influence": memory_influence,
+                "memory_written": memory_written,
+            },
+        )
+        if not event_ok:
+            raise RuntimeError("Sibyl Memory could not persist the support interaction")
+
+        return SupportResponse(
+            customer_id=customer_id,
+            reply=reply,
+            memories_used=memories,
+            memory_written=memory_written,
+            recommended_action=recommendation,
+            action_executed=False,
+            action_result=None,
+            degraded_memory=False,
+        )
