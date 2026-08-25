@@ -1,8 +1,9 @@
 from __future__ import annotations
 import os
 from pathlib import Path
+import secrets
 import httpx
-from fastapi import Depends,FastAPI,HTTPException
+from fastapi import Depends,FastAPI,HTTPException,Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse,RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -14,9 +15,11 @@ from .models import Message,SupportContextRequest,SupportRequest,SupportResponse
 from .production_agent import KnownAgent
 from .store import StructuredStore
 from .supabase_sessions import SupabaseSessionStore
+from .gmail import GmailMailbox
+from .gmail_store import GmailConnectionStore
 app=FastAPI(title='Known',version='0.6.0')
 app.add_middleware(CORSMiddleware,allow_origins=[x.strip() for x in os.getenv('KNOWN_CORS_ORIGINS','http://localhost:8000').split(',') if x.strip()],allow_credentials=True,allow_methods=['*'],allow_headers=['*'])
-app.include_router(router);app.include_router(lifecycle_router);agent=KnownAgent();durable_sessions=SupabaseSessionStore();store=StructuredStore()
+app.include_router(router);app.include_router(lifecycle_router);agent=KnownAgent();durable_sessions=SupabaseSessionStore();store=StructuredStore();gmail=GmailMailbox();gmail_connections=GmailConnectionStore();_gmail_states:dict[str,str]={}
 class SupportSessionResponse(SupportResponse):
  session_id:str;conversation:list[Message];persistence:str
 @app.get('/health')
@@ -24,6 +27,27 @@ def health():return {'status':'ok','service':'known','version':'0.6.0','conversa
 @app.get('/ready')
 def ready():
  sibyl=agent.memory.health() if isinstance(agent.memory,SibylMemory) else {'configured':True};checks={'frontend':(Path(__file__).resolve().parents[2]/'frontend').exists(),'supabase':store.configured and durable_sessions.configured,'openai':bool(os.getenv('OPENAI_API_KEY')),'sibyl':bool(sibyl.get('configured'))};return {'status':'ready' if all(checks.values()) else 'degraded','checks':checks,'sibyl':sibyl}
+@app.get('/api/gmail/connect')
+def gmail_connect(auth:AuthContext=Depends(require_auth)):
+ if not gmail.configured: raise HTTPException(503,'Gmail OAuth is not configured')
+ state=secrets.token_urlsafe(32);_gmail_states[state]=auth.business_id
+ return {'authorization_url':gmail.authorization_url(state)}
+@app.get('/api/gmail/callback')
+def gmail_callback(code:str=Query(...),state:str=Query(...)):
+ business_id=_gmail_states.pop(state,None)
+ if not business_id: raise HTTPException(400,'Invalid or expired Gmail OAuth state')
+ try: tokens=gmail.exchange_code(code)
+ except httpx.HTTPStatusError as exc: raise HTTPException(502,'Gmail authorization failed') from exc
+ access=tokens.get('access_token');refresh=tokens.get('refresh_token')
+ if not access or not refresh: raise HTTPException(502,'Gmail did not return a refresh token; reconnect with consent')
+ try:
+  profile=httpx.get('https://gmail.googleapis.com/gmail/v1/users/me/profile',headers={'Authorization':f'Bearer {access}'},timeout=10);profile.raise_for_status();email=profile.json().get('emailAddress','')
+  gmail_connections.upsert(business_id,{'gmail_address':email,'access_token':access,'refresh_token':refresh,'token_type':tokens.get('token_type'),'expires_at':None,'scopes':tokens.get('scope','')})
+ except httpx.HTTPError as exc: raise HTTPException(502,'Unable to save Gmail connection') from exc
+ return RedirectResponse(url='/workspace.html?gmail=connected',status_code=303)
+@app.get('/api/gmail/status')
+def gmail_status(auth:AuthContext=Depends(require_auth)):
+ connection=gmail_connections.get(auth.business_id);return {'connected':bool(connection),'email':connection.get('gmail_address') if connection else None}
 @app.post('/api/support',response_model=SupportSessionResponse)
 async def support(request:SupportRequest,session_id:str|None=None,auth:AuthContext=Depends(require_auth)):
  customer_data=store.customer(request.customer_id,auth.business_id)
