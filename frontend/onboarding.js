@@ -3,10 +3,11 @@ import { getSession } from "./auth.js";
 (async function bootstrap() {
   const session = await getSession();
   if (!session) { location.href = "./login.html"; return; }
+  if (sessionStorage.getItem("known.new-user") !== "true") { location.href = "./index.html"; return; }
   const $ = (s) => document.querySelector(s);
   const emailModal = $("#email-modal"), csvModal = $("#csv-modal");
   const open = (el) => { el.hidden = false; }, close = (el) => { el.hidden = true; };
-  $("#skip-for-now").onclick = () => { location.href = "./index.html"; };
+  $("#skip-for-now").onclick = () => { sessionStorage.removeItem("known.new-user"); location.href = "./index.html"; };
   $("#connect-email").onclick = () => open(emailModal);
   $("#import-csv").onclick = () => open(csvModal);
   $("#email-cancel").onclick = () => close(emailModal);
@@ -36,6 +37,7 @@ import { getSession } from "./auth.js";
       const response = await fetch("/api/imports/csv/commit", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` }, body: JSON.stringify({ csv_text: csvText, file_name: fileName }) });
       const data = await response.json(); if (!response.ok) throw new Error(data.detail || "Import failed");
       status.textContent = `Imported ${Number(data.customers || 0).toLocaleString()} customers and ${Number(data.orders || 0).toLocaleString()} orders.`;
+      sessionStorage.removeItem("known.new-user");
       location.href = "./index.html?imported=1";
     } catch (error) { status.textContent = error.message || "Import failed"; csvButton.disabled = false; }
   };
