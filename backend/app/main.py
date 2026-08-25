@@ -54,6 +54,15 @@ def gmail_poll(auth:AuthContext=Depends(require_auth)):
  if not gmail_connections.get(auth.business_id): raise HTTPException(409,'Gmail is not connected')
  try:return gmail_ingestor.poll(auth.business_id)
  except Exception as exc:raise HTTPException(502,'Gmail inbox processing failed') from exc
+@app.post('/api/internal/gmail/poll-all')
+def gmail_poll_all(x_known_cron_secret:str=Query('',alias='X-Known-Cron-Secret')):
+ secret=os.getenv('KNOWN_GMAIL_CRON_SECRET','')
+ if not secret or x_known_cron_secret!=secret:raise HTTPException(401,'Unauthorized')
+ results=[]
+ for business_id in gmail_connections.list_business_ids():
+  try:results.append({'business_id':business_id,**gmail_ingestor.poll(business_id)})
+  except Exception as exc:results.append({'business_id':business_id,'error':str(exc)})
+ return {'processed_businesses':len(results),'results':results}
 @app.post('/api/support',response_model=SupportSessionResponse)
 async def support(request:SupportRequest,session_id:str|None=None,auth:AuthContext=Depends(require_auth)):
  customer_data=store.customer(request.customer_id,auth.business_id)
