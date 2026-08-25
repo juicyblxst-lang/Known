@@ -23,6 +23,11 @@ class StructuredStore:
   p={"id":f"eq.{customer_id}","archived_at":"is.null","limit":"1"}
   if business_id:p["business_id"]=f"eq.{business_id}"
   rows=self._get("customers",p);return rows[0] if rows else None
+ def customer_by_email(self,email,business_id):
+  normalized=email.strip().lower()
+  if not normalized:return None
+  rows=self._get("customers",{"business_id":f"eq.{business_id}","email":f"eq.{normalized}","archived_at":"is.null","select":"id,name,email,tier,created_at","limit":"1"})
+  return rows[0] if rows else None
  def orders(self,customer_id,business_id=None):
   p={"customer_id":f"eq.{customer_id}","order":"created_at.desc"}
   if business_id:p["business_id"]=f"eq.{business_id}"
