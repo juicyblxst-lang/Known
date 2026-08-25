@@ -17,9 +17,10 @@ from .store import StructuredStore
 from .supabase_sessions import SupabaseSessionStore
 from .gmail import GmailMailbox
 from .gmail_store import GmailConnectionStore
+from .gmail_ingest import GmailIngestor
 app=FastAPI(title='Known',version='0.6.0')
 app.add_middleware(CORSMiddleware,allow_origins=[x.strip() for x in os.getenv('KNOWN_CORS_ORIGINS','http://localhost:8000').split(',') if x.strip()],allow_credentials=True,allow_methods=['*'],allow_headers=['*'])
-app.include_router(router);app.include_router(lifecycle_router);agent=KnownAgent();durable_sessions=SupabaseSessionStore();store=StructuredStore();gmail=GmailMailbox();gmail_connections=GmailConnectionStore();_gmail_states:dict[str,str]={}
+app.include_router(router);app.include_router(lifecycle_router);agent=KnownAgent();durable_sessions=SupabaseSessionStore();store=StructuredStore();gmail=GmailMailbox();gmail_connections=GmailConnectionStore();gmail_ingestor=GmailIngestor(gmail,gmail_connections,store,durable_sessions,agent);_gmail_states:dict[str,str]={}
 class SupportSessionResponse(SupportResponse):
  session_id:str;conversation:list[Message];persistence:str
 @app.get('/health')
@@ -48,6 +49,11 @@ def gmail_callback(code:str=Query(...),state:str=Query(...)):
 @app.get('/api/gmail/status')
 def gmail_status(auth:AuthContext=Depends(require_auth)):
  connection=gmail_connections.get(auth.business_id);return {'connected':bool(connection),'email':connection.get('gmail_address') if connection else None}
+@app.post('/api/gmail/poll')
+def gmail_poll(auth:AuthContext=Depends(require_auth)):
+ if not gmail_connections.get(auth.business_id): raise HTTPException(409,'Gmail is not connected')
+ try:return gmail_ingestor.poll(auth.business_id)
+ except Exception as exc:raise HTTPException(502,'Gmail inbox processing failed') from exc
 @app.post('/api/support',response_model=SupportSessionResponse)
 async def support(request:SupportRequest,session_id:str|None=None,auth:AuthContext=Depends(require_auth)):
  customer_data=store.customer(request.customer_id,auth.business_id)
