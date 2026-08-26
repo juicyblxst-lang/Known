@@ -17,39 +17,24 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: backend/requirements.txt
-
       - name: Install dependencies
         run: pip install -r requirements.txt pytest
-
       - name: Verify test modules have unique basenames
         working-directory: .
         run: |
           duplicates=$(find backend -type f -name 'test_*.py' -printf '%f\n' | sort | uniq -d)
-          if [ -n "$duplicates" ]; then
-            echo "Duplicate pytest module basenames detected:"
-            echo "$duplicates"
-            exit 1
-          fi
-
+          if [ -n "$duplicates" ]; then echo "$duplicates"; exit 1; fi
       - name: Verify no obvious committed secrets
         working-directory: .
         run: |
-          if git grep -nE 'sk-[A-Za-z0-9_-]{20,}|SUPABASE_SERVICE_ROLE_KEY=[^[:space:]]+' -- ':!*.lock' ':!.env.example' ':!.github/workflows/backend.yml'; then
-            echo "Potential secret material detected in tracked source."
-            exit 1
-          fi
-          if git grep -nE '(^|[^A-Za-z0-9_])service_role([^A-Za-z0-9_]|$)' -- ':!*.lock' ':!.env.example' ':!.github/workflows/backend.yml'; then
-            echo "Potential Supabase service-role material detected in tracked source."
-            exit 1
-          fi
-
+          if git grep -nE 'sk-[A-Za-z0-9_-]{20,}|SUPABASE_SERVICE_ROLE_KEY=[^[:space:]]+' -- ':!*.lock' ':!.env.example' ':!.github/workflows/backend.yml'; then exit 1; fi
+          if git grep -nE '(^|[^A-Za-z0-9_])service_role([^A-Za-z0-9_]|$)' -- ':!*.lock' ':!.env.example' ':!.github/workflows/backend.yml'; then exit 1; fi
       - name: Verify environment contract
         working-directory: .
         run: |
@@ -58,13 +43,10 @@ jobs:
           grep -q '^SUPABASE_URL=' .env.example
           grep -q '^SUPABASE_SERVICE_ROLE_KEY=' .env.example
           grep -q '^SIBYL_MEMORY_DB=' .env.example
-
       - name: Compile backend
         run: python -m compileall -q app
-
       - name: Run tests
         run: python -m pytest -q
-
       - name: Validate frontend assets
         working-directory: .
         run: |
@@ -75,7 +57,6 @@ jobs:
           grep -q '/api/config' frontend/auth.js
           grep -q '/api/support' frontend/app.js
           grep -q 'customer_id' frontend/app.js
-
       - name: Validate frontend JavaScript syntax
         run: |
           node --check ../frontend/app.js
@@ -87,23 +68,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Build production container
         run: docker build -t known-ci .
-
       - name: Smoke test production container
         run: |
           set -e
           docker run -d --name known-ci -p 8000:8000 known-ci
           trap 'docker logs known-ci || true; docker rm -f known-ci || true' EXIT
-
           for attempt in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:8000/health > /tmp/health.json; then
-              break
-            fi
+            if curl --fail --silent http://127.0.0.1:8000/health > /tmp/health.json; then break; fi
             sleep 1
           done
-
           grep -q '"status":"ok"' /tmp/health.json
           curl --fail --silent http://127.0.0.1:8000/ > /tmp/index.html
           grep -q '<html' /tmp/index.html
@@ -114,4 +89,4 @@ jobs:
           grep -q 'supabase_anon_key' /tmp/config.json
           curl --fail --silent http://127.0.0.1:8000/ready > /tmp/ready.json
           grep -q '"checks"' /tmp/ready.json
-          grep -q '"sibyl"' /tmp/ready.json
+          grep -q '"memory"' /tmp/ready.json
