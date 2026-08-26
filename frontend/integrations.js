@@ -2,7 +2,6 @@ import { getSession } from "./auth.js";
 
 const API = window.KNOWN_API_URL || "";
 const $ = (s) => document.querySelector(s);
-let activeSession = null;
 const api = async (path, options = {}) => {
   const session = await getSession();
   if (!session) return null;
@@ -48,7 +47,10 @@ function renderInbox(messages, syncResult = null) {
     row.innerHTML = `<span class="directory-avatar">✉</span><span class="directory-info"><strong></strong><small></small></span>`;
     row.querySelector("strong").textContent = message.subject || "No subject";
     row.querySelector("small").textContent = `${message.sender_email || "Unknown sender"} · ${message.body || ""}`;
-    row.addEventListener("click", () => { if (activeSession) { localStorage.setItem("known.last.gmail", activeSession); } });
+    row.addEventListener("click", () => {
+      if (!message.customer_id) return;
+      window.dispatchEvent(new CustomEvent("known:gmail-session", { detail: { customerId: message.customer_id, sessionId: message.session_id } }));
+    });
     list.appendChild(row);
   });
 }
@@ -69,10 +71,7 @@ async function init() {
   $("#sync-inbox")?.addEventListener("click", syncInbox);
   await refreshGmailStatus();
   const params = new URLSearchParams(location.search);
-  if (params.has("gmail")) {
-    history.replaceState({}, "", location.pathname);
-    await refreshGmailStatus();
-  }
+  if (params.has("gmail")) { history.replaceState({}, "", location.pathname); await refreshGmailStatus(); }
   const inbox = $("#view-inbox");
   if (inbox && !inbox.hidden) await syncInbox();
   setInterval(async () => { const current = $("#view-inbox"); if (current && !current.hidden) await syncInbox(); }, 60000);
