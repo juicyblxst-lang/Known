@@ -74,7 +74,9 @@ class KnownAgent:
         business_id = auth.business_id if auth else os.getenv("KNOWN_LOCAL_BUSINESS_ID", "local-development")
         customer_id = self._customer_id(request)
         retrieved = self._search_memory(business_id, customer_id, request.message)
-        if not retrieved.available: raise RuntimeError(f"Customer memory unavailable: {retrieved.error or 'unknown error'}")
+        if not retrieved.available:
+            error = getattr(retrieved, "error", None)
+            raise RuntimeError(f"Sibyl Memory is unavailable: {error or 'unknown error'}")
         memories = retrieved.memories; action = self._action(request.message, memories)
         system = """You are Known, a customer-support agent for a small e-commerce business.
 Relevant durable customer memory is required context for Known's support decisions.
@@ -83,7 +85,14 @@ Never invent customer history. Give a concise, empathetic answer. Treat order da
 If memory establishes a relevant preference or prior support pattern, adapt the proposed resolution to it.
 Never claim an operational action has happened unless the backend has actually executed it."""
         context = {"customer": self._customer_payload(request), "orders": self._orders(request), "conversation": self._conversation(request), "retrieved_memory": memories, "decision_and_action": action, "current_message": request.message}
-        reply = self._generate(system, context)
+        raw_reply = self._generate(system, context)
+        reply = raw_reply
+        try:
+            parsed = __import__("json").loads(raw_reply)
+            if isinstance(parsed, dict) and isinstance(parsed.get("reply"), str):
+                reply = parsed["reply"]
+        except (ValueError, TypeError):
+            pass
         memory_written = False
         extracted = self._extract_durable_memory(request.message)
         if extracted:
