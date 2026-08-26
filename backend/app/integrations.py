@@ -3,6 +3,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 import httpx
+from .auth import AuthContext
 from .gmail import GmailIntegration
 from .models import Customer, Message, Order, SupportContextRequest
 from .production_agent import KnownAgent
@@ -51,7 +52,7 @@ def process_gmail_messages(business_id:str,connection:dict[str,Any],agent:KnownA
         session_id=f"gmail:{parsed.get('external_thread_id') or external_id}"; session=sessions.get_or_create(session_id,customer["id"],business_id)
         if not any(m.content==parsed.get("body","") and m.role=="user" for m in session.messages): sessions.append(session_id,Message(role="user",content=parsed.get("body","")))
         orders=store.orders(customer["id"],business_id); request=SupportContextRequest(customer=Customer(**customer),message=parsed.get("body","") or "Please review this support email.",conversation=list(session.messages),orders=[Order(**o) for o in orders])
-        result=agent.handle(request,auth=__import__('app.auth',fromlist=['AuthContext']).AuthContext(user_id="gmail",business_id=business_id,email=customer.get("email")))
+        result=agent.handle(request,auth=AuthContext(user_id="gmail",business_id=business_id,email=customer.get("email")))
         sent=gmail.send(token,customer["email"],f"Re: {parsed.get('subject','Support request')}",result.reply,thread_id=parsed.get("external_thread_id"),in_reply_to=parsed.get("message_id_header"))
         sessions.append(session_id,Message(role="assistant",content=result.reply)); integration_store.record_message(business_id,parsed,customer["id"],session_id,"inbound"); integration_store.record_message(business_id,{**parsed,"external_message_id":sent.get("id",f"sent:{external_id}"),"sender_email":parsed.get("recipient_email"),"recipient_email":customer["email"],"body":result.reply},customer["id"],session_id,"outbound",sent.get("id")); gmail.mark_read(token,external_id); processed+=1
     return {"processed":processed,"matched":matched,"ignored":ignored}
