@@ -43,6 +43,7 @@ async def upload_customer_csv(file: UploadFile = File(...), auth: AuthContext = 
     if not (file.filename or "").lower().endswith(".csv"): raise HTTPException(status_code=400, detail="CSV file required")
     try: return import_csv(await file.read(), auth.business_id, store)
     except ValueError as exc: raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc: raise HTTPException(status_code=503, detail=str(exc)) from exc
     except httpx.HTTPError as exc: raise upstream_error() from exc
 
 @router.get("/integrations/gmail/status")
@@ -77,7 +78,8 @@ async def gmail_messages(auth: AuthContext = Depends(require_auth)) -> dict:
     connection = integrations.connection(auth.business_id)
     if not connection: return {"connected": False, "messages": []}
     try:
-        token = connection["access_token"]; raw = gmail.list_messages(token, max_results=20); return {"connected": True, "messages": [gmail.parse_message(x) for x in raw]}
+        messages = integrations.list_processed_messages(auth.business_id)
+        return {"connected": True, "messages": messages}
     except httpx.HTTPError as exc: raise HTTPException(status_code=502, detail="Gmail service unavailable") from exc
 
 @router.post("/actions", response_model=ActionResponse)
