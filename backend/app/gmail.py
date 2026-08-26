@@ -1,46 +1,46 @@
 from __future__ import annotations
-import base64, json, os, secrets, urllib.parse
-from email import message_from_bytes
-from email.header import decode_header
+import base64, hashlib, hmac, os, time
 from email.utils import parseaddr
+from typing import Any
+from urllib.parse import urlencode
 import httpx
 
-GOOGLE_AUTH = "https://accounts.google.com/o/oauth2/v2/auth"
-GOOGLE_TOKEN = "https://oauth2.googleapis.com/token"
-GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me"
-SCOPES = "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send"
-
-class GmailMailbox:
-    def __init__(self):
-        self.client_id=os.getenv("GOOGLE_CLIENT_ID","")
-        self.client_secret=os.getenv("GOOGLE_CLIENT_SECRET","")
-        self.redirect_uri=os.getenv("GOOGLE_REDIRECT_URI","")
+class GmailIntegration:
+    def __init__(self)->None:
+        self.client_id=os.getenv("GOOGLE_CLIENT_ID",""); self.client_secret=os.getenv("GOOGLE_CLIENT_SECRET",""); self.redirect_uri=os.getenv("GOOGLE_REDIRECT_URI",""); self.secret=os.getenv("GMAIL_STATE_SECRET") or self.client_secret
+        self.scope="https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send"
     @property
-    def configured(self): return bool(self.client_id and self.client_secret and self.redirect_uri)
-    def authorization_url(self,state:str)->str:
-        q={"client_id":self.client_id,"redirect_uri":self.redirect_uri,"response_type":"code","scope":SCOPES,"access_type":"offline","prompt":"consent","state":state}
-        return GOOGLE_AUTH+"?"+urllib.parse.urlencode(q)
-    def exchange_code(self,code:str)->dict:
-        r=httpx.post(GOOGLE_TOKEN,data={"code":code,"client_id":self.client_id,"client_secret":self.client_secret,"redirect_uri":self.redirect_uri,"grant_type":"authorization_code"},timeout=20);r.raise_for_status();return r.json()
-    def refresh(self,refresh_token:str)->dict:
-        r=httpx.post(GOOGLE_TOKEN,data={"refresh_token":refresh_token,"client_id":self.client_id,"client_secret":self.client_secret,"grant_type":"refresh_token"},timeout=20);r.raise_for_status();return r.json()
-    def messages(self,access_token:str,q:str="is:unread",max_results:int=25)->list[dict]:
-        h={"Authorization":f"Bearer {access_token}"};r=httpx.get(f"{GMAIL_API}/messages",headers=h,params={"q":q,"maxResults":max_results},timeout=20);r.raise_for_status();return r.json().get("messages",[])
-    def message(self,access_token:str,message_id:str)->dict:
-        h={"Authorization":f"Bearer {access_token}"};r=httpx.get(f"{GMAIL_API}/messages/{message_id}",headers=h,params={"format":"raw"},timeout=20);r.raise_for_status();return r.json()
+    def configured(self)->bool: return bool(self.client_id and self.client_secret and self.redirect_uri and self.secret)
+    def state(self,business_id:str)->str:
+        payload=f"{business_id}:{int(time.time())}"; sig=hmac.new(self.secret.encode(),payload.encode(),hashlib.sha256).hexdigest(); return base64.urlsafe_b64encode(f"{payload}:{sig}".encode()).decode()
+    def verify_state(self,value:str,max_age:int=600)->str:
+        raw=base64.urlsafe_b64decode(value.encode()).decode(); business_id,issued,signature=raw.rsplit(":",2); payload=f"{business_id}:{issued}"
+        if not hmac.compare_digest(signature,hmac.new(self.secret.encode(),payload.encode(),hashlib.sha256).hexdigest()): raise ValueError("invalid OAuth state")
+        if int(time.time())-int(issued)>max_age: raise ValueError("expired OAuth state")
+        return business_id
+    def authorize_url(self,state:str)->str: return "https://accounts.google.com/o/oauth2/v2/auth?"+urlencode({"client_id":self.client_id,"redirect_uri":self.redirect_uri,"response_type":"code","scope":self.scope,"access_type":"offline","prompt":"consent","state":state})
+    def exchange(self,code:str)->dict[str,Any]:
+        r=httpx.post("https://oauth2.googleapis.com/token",data={"code":code,"client_id":self.client_id,"client_secret":self.client_secret,"redirect_uri":self.redirect_uri,"grant_type":"authorization_code"},timeout=15); r.raise_for_status(); return r.json()
+    def refresh(self,refresh_token:str)->dict[str,Any]:
+        r=httpx.post("https://oauth2.googleapis.com/token",data={"refresh_token":refresh_token,"client_id":self.client_id,"client_secret":self.client_secret,"grant_type":"refresh_token"},timeout=15); r.raise_for_status(); return r.json()
+    def _request(self,token:str,method:str,path:str,**kwargs:Any)->Any:
+        r=httpx.request(method,f"https://gmail.googleapis.com/gmail/v1/users/me/{path}",headers={"Authorization":f"Bearer {token}"},timeout=20,**kwargs); r.raise_for_status(); return r.json() if r.content else {}
+    def profile(self,token:str)->dict[str,Any]: return self._request(token,"GET","profile")
+    def list_messages(self,token:str,max_results:int=20)->list[dict[str,Any]]:
+        data=self._request(token,"GET","messages",params={"maxResults":str(max_results),"labelIds":"INBOX","q":"is:unread -from:me"})
+        return [self._request(token,"GET",f"messages/{x['id']}",params={"format":"full"}) for x in data.get("messages",[])]
+    def mark_read(self,token:str,message_id:str)->None: self._request(token,"POST",f"messages/{message_id}/modify",json={"removeLabelIds":["UNREAD"]})
     @staticmethod
-    def parse_raw(raw:str)->dict:
-        msg=message_from_bytes(base64.urlsafe_b64decode(raw+'='*((4-len(raw)%4)%4)))
-        def hdr(name):
-            value=msg.get(name,""); return "".join((p.decode(enc or 'utf-8','replace') if isinstance(p,bytes) else p) for p,enc in decode_header(value))
-        body=""
-        if msg.is_multipart():
-            for part in msg.walk():
-                if part.get_content_type()=="text/plain" and part.get_content_disposition() not in ("attachment",): body=part.get_payload(decode=True).decode(part.get_content_charset() or 'utf-8','replace');break
-        else: body=msg.get_payload(decode=True).decode(msg.get_content_charset() or 'utf-8','replace') if msg.get_payload(decode=True) else ""
-        name,email=parseaddr(hdr("From"))
-        return {"message_id":hdr("Message-ID"),"thread_id":hdr("X-GM-THRID"),"from_name":name,"from_email":email.lower(),"subject":hdr("Subject"),"body":body.strip()}
-    def send(self,access_token:str,to:str,subject:str,body:str,thread_id:str|None=None)->dict:
-        raw=f"To: {to}\r\nSubject: {subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{body}".encode(); encoded=base64.urlsafe_b64encode(raw).decode().rstrip('=');payload={"raw":encoded};
+    def parse_message(message:dict[str,Any])->dict[str,Any]:
+        headers={h["name"].lower():h["value"] for h in message.get("payload",{}).get("headers",[])}; body=""; payload=message.get("payload",{}); parts=payload.get("parts") or [payload]
+        for part in parts:
+            if part.get("mimeType")=="text/plain" and part.get("body",{}).get("data"):
+                body=base64.urlsafe_b64decode(part["body"]["data"]+"===").decode("utf-8",errors="replace"); break
+        sender_name,sender_email=parseaddr(headers.get("from","")); _,recipient_email=parseaddr(headers.get("to",""))
+        return {"external_message_id":message.get("id"),"external_thread_id":message.get("threadId"),"sender_name":sender_name,"sender_email":sender_email.lower(),"recipient_email":recipient_email.lower(),"subject":headers.get("subject",""),"body":body,"message_id_header":headers.get("message-id")}
+    def send(self,token:str,to:str,subject:str,body:str,thread_id:str|None=None,in_reply_to:str|None=None)->dict[str,Any]:
+        headers=[f"To: {to}",f"Subject: {subject}","Content-Type: text/plain; charset=utf-8"]
+        if in_reply_to: headers += [f"In-Reply-To: {in_reply_to}",f"References: {in_reply_to}"]
+        payload={"raw":base64.urlsafe_b64encode(("\r\n".join(headers)+"\r\n\r\n"+body).encode()).decode()}
         if thread_id: payload["threadId"]=thread_id
-        r=httpx.post(f"{GMAIL_API}/messages/send",headers={"Authorization":f"Bearer {access_token}","Content-Type":"application/json"},json=payload,timeout=20);r.raise_for_status();return r.json()
+        return self._request(token,"POST","messages/send",json=payload)

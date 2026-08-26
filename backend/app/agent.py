@@ -31,13 +31,15 @@ class KnownAgent:
 
     @staticmethod
     def _customer_id(request: SupportRequest | SupportContextRequest) -> str:
-        if isinstance(request, SupportRequest):
-            return request.customer_id
-        return request.customer.id
+        if isinstance(request, SupportContextRequest):
+            return request.customer.id
+        return request.customer.id if request.customer is not None else request.customer_id  # type: ignore[return-value]
 
     @staticmethod
     def _customer_payload(request: SupportRequest | SupportContextRequest) -> dict:
         if isinstance(request, SupportContextRequest):
+            return request.customer.model_dump()
+        if request.customer is not None:
             return request.customer.model_dump()
         return {"id": request.customer_id}
 
@@ -116,8 +118,8 @@ Never claim an operational action has happened unless the backend has actually e
 
     @staticmethod
     def _fallback(request: SupportRequest | SupportContextRequest, memories: list[dict], action: str | None) -> str:
-        customer_name = request.customer.name if isinstance(request, SupportContextRequest) else "Customer"
-        name = customer_name.split()[0] or customer_name
+        customer = request.customer if isinstance(request, SupportContextRequest) else request.customer
+        name = customer.name.split()[0] if customer else "Customer"
         if memories and action and "preferred expedited" in action:
             return f"Hi {name}, I found your previous preference for expedited handling when timing is critical. I’ll check the delayed shipment first and, if it cannot meet your Friday deadline, prioritize that preferred resolution."
         if memories and action and "proactively monitor" in action:
