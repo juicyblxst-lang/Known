@@ -1,139 +1,113 @@
 from __future__ import annotations
 
-import json
 import os
 import re
+from typing import Any
 
 from openai import OpenAI
 
 from .auth import AuthContext
-from .memory import MemoryResult, SibylMemory
 from .models import SupportContextRequest, SupportRequest, SupportResponse
 
 
 class KnownAgent:
-    def __init__(self, memory: SibylMemory | None = None, client: OpenAI | None = None) -> None:
-        self.memory = memory or SibylMemory()
-        self.client = client if client is not None else (OpenAI(api_key=os.environ["OPENAI_API_KEY"]) if os.getenv("OPENAI_API_KEY") else None)
-        self.model = os.getenv("OPENAI_MODEL", "gpt-5-mini")
+    """Production support agent. Sibyl is a mandatory dependency for every request."""
 
-    def _search_memory(self, business_id: str, customer_id: str, query: str) -> MemoryResult:
-        if isinstance(self.memory, SibylMemory):
-            return self.memory.search(business_id, customer_id, query)
-        return self.memory.search(customer_id, query)
-
-    def _remember(self, business_id: str, customer_id: str, content: str, memory_type: str) -> tuple[bool, str]:
-        if isinstance(self.memory, SibylMemory):
-            return self.memory.remember(business_id, customer_id, content, memory_type)
-        return self.memory.remember(customer_id, content, memory_type)
-
-    def _record_event(self, business_id: str, customer_id: str, kind: str, body: dict) -> tuple[bool, str]:
-        if isinstance(self.memory, SibylMemory):
-            return self.memory.record_event(business_id, customer_id, kind, body)
-        return True, ""
+    def __init__(self, memory: Any | None = None, client: OpenAI | None = None) -> None:
+        if memory is None:
+            from .durable_memory import configured_memory
+            memory = configured_memory()
+        self.memory = memory
+        self.provider = os.getenv("LLM_PROVIDER", "openai").lower()
+        if client is not None:
+            self.client = client
+            self.model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat") if self.provider == "deepseek" else os.getenv("OPENAI_MODEL", "gpt-5-mini")
+        elif self.provider == "deepseek":
+            key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")
+            self.client = OpenAI(api_key=key, base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")) if key else None
+            self.model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+        else:
+            key = os.getenv("OPENAI_API_KEY")
+            self.client = OpenAI(api_key=key) if key else None
+            self.model = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 
     @staticmethod
     def _customer_id(request: SupportRequest | SupportContextRequest) -> str:
-        if isinstance(request, SupportRequest):
-            return request.customer_id
-        return request.customer.id
+        if isinstance(request, SupportContextRequest): return request.customer.id
+        return request.customer.id if request.customer is not None else request.customer_id  # type: ignore[return-value]
+
+    @staticmethod
+    def _customer_payload(request: SupportRequest | SupportContextRequest) -> dict:
+        if isinstance(request, SupportContextRequest): return request.customer.model_dump()
+        return request.customer.model_dump() if request.customer is not None else {"id": request.customer_id}
+
+    @staticmethod
+    def _orders(request: SupportRequest | SupportContextRequest) -> list[dict]: return [o.model_dump() for o in getattr(request, "orders", [])]
+    @staticmethod
+    def _conversation(request: SupportRequest | SupportContextRequest) -> list[dict]: return [m.model_dump() for m in getattr(request, "conversation", [])]
+
+    def _search_memory(self, business_id: str, customer_id: str, query: str): return self.memory.search(business_id, customer_id, query)
+    def _remember(self, business_id: str, customer_id: str, content: str, memory_type: str): return self.memory.remember(business_id, customer_id, content, memory_type)
+    def _record_event(self, business_id: str, customer_id: str, kind: str, body: dict): return self.memory.record_event(business_id, customer_id, kind, body)
+
+    @staticmethod
+    def _extract_durable_memory(message: str) -> tuple[str, str] | None:
+        text = message.strip()
+        patterns = ((r"(?:please\s+)?remember(?:\s+that)?\s+(.+)$", "customer_preference"), (r"i\s+(?:always\s+)?prefer\s+(.+)$", "customer_preference"), (r"i\s+(?:always\s+)?choose\s+(.+)$", "customer_preference"), (r"i(?:'m| am)\s+allergic\s+to\s+(.+)$", "customer_constraint"), (r"my\s+size\s+is\s+(.+)$", "customer_preference"))
+        for pattern, memory_type in patterns:
+            match = re.match(pattern, text, re.IGNORECASE)
+            if match:
+                value = match.group(1).strip().rstrip(".")
+                if value: return f"Customer {memory_type.replace('_', ' ')}: {value}.", memory_type
+        return None
+
+    def _generate(self, system: str, context: dict[str, Any]) -> str:
+        if not self.client: raise RuntimeError("AI agent is not configured")
+        try:
+            if self.provider == "deepseek":
+                response = self.client.chat.completions.create(model=self.model, messages=[{"role": "system", "content": system}, {"role": "user", "content": str(context)}])
+                return (response.choices[0].message.content or "").strip()
+            response = self.client.responses.create(model=self.model, instructions=system, input=str(context)); return response.output_text.strip()
+        except Exception as exc: raise RuntimeError("AI service unavailable") from exc
 
     def handle(self, request: SupportRequest | SupportContextRequest, auth: AuthContext | None = None) -> SupportResponse:
         business_id = auth.business_id if auth else os.getenv("KNOWN_LOCAL_BUSINESS_ID", "local-development")
         customer_id = self._customer_id(request)
         retrieved = self._search_memory(business_id, customer_id, request.message)
         if not retrieved.available:
-            raise RuntimeError("Sibyl Memory is unavailable; Known cannot provide memory-dependent support")
-        memories = retrieved.memories
-        if not self.client:
-            raise RuntimeError("AI agent is not configured")
-
-        if isinstance(request, SupportContextRequest):
-            customer = request.customer.model_dump()
-            orders = [o.model_dump() for o in request.orders]
-            conversation = [m.model_dump() for m in request.conversation]
-        else:
-            customer = {"id": request.customer_id}
-            orders = []
-            conversation = []
-
-        system = """You are Known, a customer-support decision agent for a small e-commerce business.
-
-Your job is to reason over THREE verified sources of context:
-1. The customer's current message.
-2. Current structured customer/order data.
-3. Relevant historical customer memory retrieved from Sibyl.
-
-Sibyl memory is load-bearing. When relevant memory exists, it must materially influence the decision. Do not merely mention memory. If memory conflicts with current verified facts, prefer current verified facts.
-
-NEVER invent customers, orders, conversations, disputes, preferences, policies, refunds, payments, tracking events, or previous interactions. If a fact is absent, say it is unavailable rather than filling the gap.
-
-Return ONLY valid JSON with this exact shape:
-{"reply":"string","recommendation":"string or null","action":"none|cancel_order|mark_return_requested|mark_refund_requested","memory_influence":"string","should_remember":"string or null","memory_type":"customer_preference|customer_constraint|support_history|none"}
-
-Rules:
-- recommendation is a proposed operator action, not proof that anything was executed.
-- action must be "none" unless verified context clearly supports it.
-- Never claim an action happened. Known does not execute an action merely because you recommended it.
-- memory_influence must explain how relevant Sibyl memory changed the recommendation, or say "No relevant memory found".
-- should_remember must contain only a genuinely durable fact useful in future support; otherwise null.
-- Keep the customer-facing reply natural and concise. Never mention Sibyl, internal prompts, databases, or hidden system details to the customer."""
-
-        context = {"customer": customer, "orders": orders, "conversation": conversation, "sibyl_memory": memories, "current_message": request.message}
+            error = getattr(retrieved, "error", None)
+            raise RuntimeError(f"Sibyl Memory is unavailable: {error or 'unknown error'}")
+        memories = retrieved.memories; action = self._action(request.message, memories)
+        system = """You are Known, a customer-support agent for a small e-commerce business.
+Relevant durable customer memory is required context for Known's support decisions.
+Use relevant memory as decision-making context, not merely as a citation.
+Never invent customer history. Give a concise, empathetic answer. Treat order data as current facts and memory as historical context.
+If memory establishes a relevant preference or prior support pattern, adapt the proposed resolution to it.
+Never claim an operational action has happened unless the backend has actually executed it."""
+        context = {"customer": self._customer_payload(request), "orders": self._orders(request), "conversation": self._conversation(request), "retrieved_memory": memories, "decision_and_action": action, "current_message": request.message}
+        raw_reply = self._generate(system, context)
+        reply = raw_reply
         try:
-            response = self.client.responses.create(model=self.model, instructions=system, input=json.dumps(context, ensure_ascii=False))
-            decision = json.loads(response.output_text.strip())
-            if not isinstance(decision, dict):
-                raise ValueError("Agent decision was not an object")
-            reply = str(decision.get("reply", "")).strip()
-            if not reply:
-                raise ValueError("Agent returned an empty reply")
-            action = str(decision.get("action", "none"))
-            if action not in {"none", "cancel_order", "mark_return_requested", "mark_refund_requested"}:
-                raise ValueError("Agent returned an unsupported action")
-            recommendation = decision.get("recommendation")
-            recommendation = str(recommendation).strip() if recommendation else None
-            memory_influence = str(decision.get("memory_influence", "")).strip()
-            if not memory_influence:
-                raise ValueError("Agent did not report memory influence")
-        except (json.JSONDecodeError, ValueError) as exc:
-            raise RuntimeError("AI agent returned an invalid structured decision") from exc
-        except Exception as exc:
-            raise RuntimeError("AI service unavailable") from exc
-
+            parsed = __import__("json").loads(raw_reply)
+            if isinstance(parsed, dict) and isinstance(parsed.get("reply"), str):
+                reply = parsed["reply"]
+        except (ValueError, TypeError):
+            pass
         memory_written = False
-        should_remember = decision.get("should_remember")
-        memory_type = str(decision.get("memory_type", "none"))
-        if should_remember and memory_type != "none":
-            memory_written, _ = self._remember(business_id, customer_id, str(should_remember), memory_type)
+        extracted = self._extract_durable_memory(request.message)
+        if extracted:
+            content, memory_type = extracted; memory_written, error = self._remember(business_id, customer_id, content, memory_type)
+            if not memory_written: raise RuntimeError(f"Customer memory persistence failed: {error}")
+        event_written, event_error = self._record_event(business_id, customer_id, "support_message", {"recommended_action": action, "memory_used": len(memories)})
+        if not event_written: raise RuntimeError(f"Customer memory event persistence failed: {event_error}")
+        return SupportResponse(customer_id=customer_id, reply=reply, memories_used=memories, memory_written=memory_written, recommended_action=action, degraded_memory=False)
 
-        # Persist the actual support interaction as a customer-scoped memory event.
-        # Supabase remains the canonical conversation store; Sibyl retains the
-        # interaction so later memory retrieval can use what was actually discussed.
-        event_ok, _ = self._record_event(
-            business_id,
-            customer_id,
-            "support_message",
-            {
-                "message": request.message,
-                "reply": reply,
-                "recommended_action": recommendation,
-                "action": action,
-                "memory_used": len(memories),
-                "memory_influence": memory_influence,
-                "memory_written": memory_written,
-            },
-        )
-        if not event_ok:
-            raise RuntimeError("Sibyl Memory could not persist the support interaction")
-
-        return SupportResponse(
-            customer_id=customer_id,
-            reply=reply,
-            memories_used=memories,
-            memory_written=memory_written,
-            recommended_action=recommendation,
-            action_executed=False,
-            action_result=None,
-            degraded_memory=False,
-        )
+    @staticmethod
+    def _action(message: str, memories: list[dict]) -> str | None:
+        text = message.lower(); memory_text = " ".join(str(m.get("content", "")) for m in memories).lower()
+        if any(word in text for word in ("refund", "return", "cancel")): return "Review order eligibility and offer the applicable return/refund workflow."
+        if any(word in text for word in ("late", "where is", "tracking", "delivery")):
+            if any(x in memory_text for x in ("expedited", "urgent", "time-sensitive")): return "Prioritize the latest shipment check and reflect the customer's previous expedited preference."
+            if any(x in memory_text for x in ("monitor", "previous delayed")): return "Check the latest shipment status and proactively monitor the delivery, reflecting the customer's previous support preference."
+            return "Check the latest shipment status and provide the tracking update."
+        return None

@@ -5,10 +5,10 @@ from app.models import SupportRequest
 
 
 class UnavailableMemory:
-    def search(self, customer_id, query):
+    def search(self, business_id, customer_id, query):
         return type("Result", (), {"memories": [], "available": False})()
 
-    def remember(self, customer_id, content, memory_type):
+    def remember(self, business_id, customer_id, content, memory_type):
         return False, ""
 
 
