@@ -69,15 +69,18 @@ async def require_auth(authorization: str | None = Header(default=None)) -> Auth
 
     url = os.getenv("SUPABASE_URL", "").rstrip("/")
     service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-    if not url or not service_key:
+    verification_key = os.getenv("SUPABASE_ANON_KEY", "") or service_key
+    if not url or not verification_key:
         raise HTTPException(status_code=503, detail="Supabase authentication is not configured")
+    if not service_key:
+        raise HTTPException(status_code=503, detail="Supabase workspace provisioning is not configured")
 
     token = authorization.split(" ", 1)[1].strip()
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.get(
                 f"{url}/auth/v1/user",
-                headers={"apikey": service_key, "Authorization": f"Bearer {token}"},
+                headers={"apikey": verification_key, "Authorization": f"Bearer {token}"},
             )
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=503, detail="Authentication service unavailable") from exc
