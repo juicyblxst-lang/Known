@@ -29,8 +29,9 @@ def _pick(row: dict[str, Any], *names: str) -> str:
     return ""
 
 
-def _stable_id(prefix: str, value: str) -> str:
-    digest = hashlib.sha256(value.strip().lower().encode("utf-8")).hexdigest()[:24]
+def _stable_id(prefix: str, value: str, scope: str = "") -> str:
+    seed = f"{scope.strip().lower()}:{value.strip().lower()}" if scope else value.strip().lower()
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
     return f"{prefix}_{digest}"
 
 
@@ -50,7 +51,7 @@ def _reader(csv_text: str) -> csv.DictReader:
     return csv.DictReader(io.StringIO(text, newline=""), dialect=dialect, restkey="__extra__")
 
 
-def inspect_and_build(csv_text: str) -> dict[str, Any]:
+def inspect_and_build(csv_text: str, business_id: str | None = None) -> dict[str, Any]:
     if not isinstance(csv_text, str) or not csv_text.strip():
         raise ValueError("The selected file is empty")
     if len(csv_text.encode("utf-8")) > MAX_CSV_BYTES:
@@ -73,6 +74,7 @@ def inspect_and_build(csv_text: str) -> dict[str, Any]:
 
     customers: dict[str, dict[str, Any]] = {}
     orders: dict[str, dict[str, Any]] = {}
+    scope = business_id or ""
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -86,12 +88,12 @@ def inspect_and_build(csv_text: str) -> dict[str, Any]:
             name = _pick(row, "name")
         if not name:
             name = email.split("@", 1)[0]
-        customer_id = _stable_id("csv_customer", email)
+        customer_id = _stable_id("csv_customer", email, scope)
         customers[email] = {"id": customer_id, "name": name, "email": email, "tier": _pick(row, "tier", "customer_tier") or "standard"}
         if has_order_signals:
             order_ref = _pick(row, "order_id", "order_number", "order_name", "name")
             if order_ref:
-                order_id = _stable_id("csv_order", order_ref)
+                order_id = _stable_id("csv_order", order_ref, scope)
                 item_name = _pick(row, "lineitem_name", "line_item_name", "product_name", "item_name")
                 quantity_raw = _pick(row, "lineitem_quantity", "line_item_quantity", "quantity")
                 try:
