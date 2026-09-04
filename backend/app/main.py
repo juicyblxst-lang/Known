@@ -51,8 +51,12 @@ async def support(request: SupportRequest,session_id:str|None=None,auth:AuthCont
     try: session=durable_sessions.get_or_create(resolved_session_id,request.customer_id,auth.business_id)
     except ValueError as exc: raise HTTPException(status_code=403,detail="session does not belong to customer") from exc
     except httpx.HTTPError as exc: raise HTTPException(status_code=502,detail="Conversation persistence service unavailable") from exc
-    context_request=SupportContextRequest(customer=customer_data,message=request.message,conversation=list(session.messages),orders=orders_data)
-    try: durable_sessions.append(resolved_session_id,Message(role="user",content=request.message)); result=agent.handle(context_request,auth=auth); durable_sessions.append(resolved_session_id,Message(role="assistant",content=result.reply))
+    try:
+        durable_sessions.append(resolved_session_id,Message(role="user",content=request.message))
+        session.messages.append(Message(role="user",content=request.message))
+        context_request=SupportContextRequest(customer=customer_data,message=request.message,conversation=list(session.messages),orders=orders_data)
+        result=agent.handle(context_request,auth=auth)
+        durable_sessions.append(resolved_session_id,Message(role="assistant",content=result.reply))
     except httpx.HTTPError as exc: raise HTTPException(status_code=502,detail="Conversation persistence service unavailable") from exc
     except RuntimeError as exc: raise HTTPException(status_code=502,detail=str(exc)) from exc
     except Exception as exc: raise HTTPException(status_code=502,detail="Agent service unavailable") from exc
