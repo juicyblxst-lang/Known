@@ -88,7 +88,7 @@ async def get_workspace(customer_id: str, memory_query: str = Query("customer hi
 
 @router.get("/onboarding/status")
 async def onboarding_status(auth: AuthContext = Depends(require_auth)) -> dict[str, bool]:
-    """Return the onboarding state already resolved from the authenticated Supabase user."""
+    """Return onboarding state already resolved from the authenticated Supabase user."""
     return {"completed": auth.onboarding_completed}
 
 @router.post("/onboarding/complete")
