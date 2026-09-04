@@ -25,14 +25,75 @@ async function connectGmail() {
   location.href = data.authorization_url;
 }
 
+let csvInspection = null;
+
+function showImportResult(message, hidden = false) {
+  const result = $("#setup-result");
+  if (!result) return;
+  result.hidden = hidden;
+  result.textContent = message;
+}
+
+async function inspectCsvFile(file) {
+  const button = $("#import-csv");
+  if (!file) {
+    csvInspection = null;
+    if (button) button.disabled = true;
+    showImportResult("Choose a CSV file to import.", false);
+    return;
+  }
+  if (!file.name.toLowerCase().endsWith(".csv")) {
+    csvInspection = null;
+    if (button) button.disabled = true;
+    showImportResult("Please choose a CSV file.", false);
+    return;
+  }
+
+  if (button) { button.disabled = true; button.textContent = "Inspecting…"; }
+  showImportResult(`Reading ${file.name}…`, false);
+  try {
+    const csvText = await file.text();
+    const response = await api("/api/imports/csv/inspect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ csv_text: csvText, file_name: file.name })
+    });
+    const data = await response?.json().catch(() => ({}));
+    if (!response?.ok) throw new Error(data?.detail || `CSV inspection failed (${response?.status || "network"})`);
+    csvInspection = { csvText, fileName: file.name, data };
+    showImportResult(`${file.name} is ready · ${Number(data.row_count || 0).toLocaleString()} rows · ${Number(data.customer_count || 0).toLocaleString()} customers · ${Number(data.order_count || 0).toLocaleString()} orders.`, false);
+    if (button) { button.disabled = false; button.textContent = "Import"; }
+  } catch (error) {
+    csvInspection = null;
+    showImportResult(error.message || "Could not inspect CSV.", false);
+    if (button) { button.disabled = true; button.textContent = "Import"; }
+  }
+}
+
 async function importCsv() {
-  const file = $("#csv-file")?.files?.[0]; const result = $("#setup-result");
-  if (!file) { if (result) { result.hidden = false; result.textContent = "Choose a CSV file first."; } return; }
-  const form = new FormData(); form.append("file", file);
-  const response = await api("/api/import/csv", { method: "POST", body: form });
-  const data = await response?.json().catch(() => ({}));
-  if (result) { result.hidden = false; result.textContent = response?.ok ? `Imported ${data.customers} customers and ${data.orders} orders from ${data.rows} rows.` : (data?.detail || "Import failed."); }
-  if (response?.ok) setTimeout(() => location.reload(), 700);
+  const button = $("#import-csv");
+  if (!csvInspection) {
+    await inspectCsvFile($("#csv-file")?.files?.[0]);
+    return;
+  }
+  if (button) { button.disabled = true; button.textContent = "Importing…"; }
+  showImportResult(`Importing ${csvInspection.fileName}…`, false);
+  try {
+    const response = await api("/api/imports/csv/commit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ csv_text: csvInspection.csvText, file_name: csvInspection.fileName })
+    });
+    const data = await response?.json().catch(() => ({}));
+    if (!response?.ok) throw new Error(data?.detail || `Import failed (${response?.status || "network"})`);
+    showImportResult(`Imported ${Number(data.customers || 0).toLocaleString()} customers and ${Number(data.orders || 0).toLocaleString()} orders. Customer memory is ready.`, false);
+    csvInspection = null;
+    if (button) button.textContent = "Imported";
+    setTimeout(() => location.reload(), 900);
+  } catch (error) {
+    showImportResult(error.message || "Import failed.", false);
+    if (button) { button.disabled = false; button.textContent = "Import"; }
+  }
 }
 
 function renderInbox(messages, syncResult = null) {
@@ -65,8 +126,12 @@ async function syncInbox() {
 }
 
 async function init() {
+  const fileInput = $("#csv-file");
+  const importButton = $("#import-csv");
+  if (importButton) importButton.disabled = true;
+  fileInput?.addEventListener("change", () => inspectCsvFile(fileInput.files?.[0]));
+  importButton?.addEventListener("click", importCsv);
   $("#connect-gmail")?.addEventListener("click", connectGmail);
-  $("#import-csv")?.addEventListener("click", importCsv);
   $("#sync-inbox")?.addEventListener("click", syncInbox);
   await refreshGmailStatus();
   const params = new URLSearchParams(location.search);
