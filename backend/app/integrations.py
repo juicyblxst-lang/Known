@@ -51,7 +51,7 @@ class IntegrationStore:
         self._request("PATCH","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","external_message_id":f"eq.{external_id}"},json={"processing_status":"processed","processed_at":datetime.now(timezone.utc).isoformat(),"last_error":None})
     def mark_failed(self,business_id:str,external_id:str,error:str)->None:
         self._request("PATCH","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","external_message_id":f"eq.{external_id}"},json={"processing_status":"failed","last_error":error[:1000]})
-    def list_processed_messages(self,business_id:str,limit:int=50)->list[dict[str,Any]]: return self._request("GET","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","direction":"eq.inbound","select":"external_message_id,external_thread_id,customer_id,session_id,sender_email,subject,body,received_at","order":"received_at.desc","limit":str(limit)})
+    def list_processed_messages(self,business_id:str,limit:int=50)->list[dict[str,Any]]: return self._request("GET","external_messages",params={"business_id":f"eq.{business_id}","provider":"gmail","direction":"eq.inbound","select":"external_message_id,external_thread_id,customer_id,session_id,sender_email,subject,body,received_at","order":"received_at.desc","limit":str(limit)})
     def record_message(self,business_id:str,data:dict[str,Any],customer_id:str|None,session_id:str|None,direction:str,external_id:str|None=None)->None:
         payload={"business_id":business_id,"provider":"gmail","external_message_id":external_id or data["external_message_id"],"external_thread_id":data.get("external_thread_id"),"customer_id":customer_id,"session_id":session_id,"direction":direction,"sender_email":data.get("sender_email"),"recipient_email":data.get("recipient_email"),"subject":data.get("subject"),"body":data.get("body","") ,"received_at":datetime.now(timezone.utc).isoformat(),"processed_at":datetime.now(timezone.utc).isoformat()}
         self._request("POST","external_messages",headers={"Prefer":"resolution=ignore-duplicates"},json=payload)
@@ -76,6 +76,13 @@ def process_gmail_messages(business_id:str,connection:dict[str,Any],agent:KnownA
             if claim is None:
                 ignored+=1; continue
             if claim.get("processing_status")=="sent":
+                session_id=claim.get("session_id"); customer_id=claim.get("customer_id"); reply=claim.get("outbound_body") or ""
+                if session_id and customer_id and reply:
+                    session=sessions.get(session_id,customer_id,business_id)
+                    if session and not any(m.role=="assistant" and m.content==reply for m in session.messages): sessions.append(session_id,Message(role="assistant",content=reply))
+                    sent_id=claim.get("outbound_message_id")
+                    if sent_id:
+                        integration_store.record_message(business_id,{**parsed,"external_message_id":sent_id,"sender_email":parsed.get("recipient_email"),"recipient_email":parsed.get("sender_email"),"body":reply},customer_id,session_id,"outbound",sent_id)
                 integration_store.mark_processed(business_id,external_id); gmail.mark_read(token,external_id); processed+=1; matched+=1; continue
             sender=parsed.get("sender_email","")
             if not sender:
