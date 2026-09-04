@@ -8,7 +8,7 @@ async function getConfig() {
 async function supabaseRequest(path, options = {}) {
   const config = await getConfig();
   if (!config.supabase_url || !config.supabase_anon_key) throw new Error("Supabase authentication is not configured.");
-  return fetch(`${config.supabase_url}/auth/v1${path}`, { ...options, headers: { apikey: config.supabase_anon_key, ...(options.body ? {"Content-Type":"application/json"}:{}), ...(options.headers || {}) });
+  return fetch(`${config.supabase_url}/auth/v1${path}`, { ...options, headers: { apikey: config.supabase_anon_key, ...(options.body ? {"Content-Type":"application/json"}:{}), ...(options.headers || {}) } });
 }
 export async function authConfigured(){ const config=await getConfig(); return Boolean(config.supabase_url&&config.supabase_anon_key); }
 function clearSession(){localStorage.removeItem("known.access_token");localStorage.removeItem("known.refresh_token");}
