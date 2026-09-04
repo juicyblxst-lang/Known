@@ -34,22 +34,54 @@ function showImportResult(message, hidden = false) {
   result.textContent = message;
 }
 
+function setCsvState(message) {
+  const node = $("#csv-file-state");
+  if (node) node.textContent = message;
+}
+
+function openImportModal() {
+  const modal = $("#csv-import-modal");
+  const complete = $("#csv-complete");
+  if (modal) modal.hidden = false;
+  if (complete) complete.hidden = true;
+  const bar = $("#csv-progress-bar");
+  if (bar) bar.style.width = "0%";
+}
+
+function updateImportProgress(percent, label, message = null) {
+  const bar = $("#csv-progress-bar");
+  const progressLabel = $("#csv-progress-label");
+  const progressMessage = $("#csv-import-message");
+  if (bar) bar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  if (progressLabel) progressLabel.textContent = label;
+  if (message && progressMessage) progressMessage.textContent = message;
+}
+
+function finishImportModal() {
+  updateImportProgress(100, "Import complete", "Your customers and orders are now stored in the Known workspace.");
+  const complete = $("#csv-complete");
+  if (complete) complete.hidden = false;
+}
+
 async function inspectCsvFile(file) {
   const button = $("#import-csv");
   if (!file) {
     csvInspection = null;
-    if (button) button.disabled = true;
+    if (button) { button.disabled = true; button.textContent = "Add to Customers"; }
+    setCsvState("Choose a CSV file to continue.");
     showImportResult("Choose a CSV file to import.", false);
     return;
   }
   if (!file.name.toLowerCase().endsWith(".csv")) {
     csvInspection = null;
-    if (button) button.disabled = true;
+    if (button) { button.disabled = true; button.textContent = "Add to Customers"; }
+    setCsvState("That file is not a CSV.");
     showImportResult("Please choose a CSV file.", false);
     return;
   }
 
   if (button) { button.disabled = true; button.textContent = "Inspecting…"; }
+  setCsvState(`Reading ${file.name}…`);
   showImportResult(`Reading ${file.name}…`, false);
   try {
     const csvText = await file.text();
@@ -61,12 +93,14 @@ async function inspectCsvFile(file) {
     const data = await response?.json().catch(() => ({}));
     if (!response?.ok) throw new Error(data?.detail || `CSV inspection failed (${response?.status || "network"})`);
     csvInspection = { csvText, fileName: file.name, data };
+    setCsvState(`${file.name} · ${Number(data.row_count || 0).toLocaleString()} rows · ${Number(data.customer_count || 0).toLocaleString()} customers`);
     showImportResult(`${file.name} is ready · ${Number(data.row_count || 0).toLocaleString()} rows · ${Number(data.customer_count || 0).toLocaleString()} customers · ${Number(data.order_count || 0).toLocaleString()} orders.`, false);
-    if (button) { button.disabled = false; button.textContent = "Import"; }
+    if (button) { button.disabled = false; button.textContent = "Add to Customers"; }
   } catch (error) {
     csvInspection = null;
+    setCsvState("Unable to read this CSV.");
     showImportResult(error.message || "Could not inspect CSV.", false);
-    if (button) { button.disabled = true; button.textContent = "Import"; }
+    if (button) { button.disabled = true; button.textContent = "Add to Customers"; }
   }
 }
 
@@ -76,23 +110,31 @@ async function importCsv() {
     await inspectCsvFile($("#csv-file")?.files?.[0]);
     return;
   }
-  if (button) { button.disabled = true; button.textContent = "Importing…"; }
-  showImportResult(`Importing ${csvInspection.fileName}…`, false);
+  if (button) { button.disabled = true; button.textContent = "Adding…"; }
+  openImportModal();
+  updateImportProgress(8, "Preparing…", `Preparing ${csvInspection.fileName} for your customer workspace.`);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  updateImportProgress(25, "Uploading records…", "Sending the CSV records to Known.");
   try {
     const response = await api("/api/imports/csv/commit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ csv_text: csvInspection.csvText, file_name: csvInspection.fileName })
     });
+    updateImportProgress(65, "Writing customers and orders…", "Saving customer records and order history to the workspace database.");
     const data = await response?.json().catch(() => ({}));
     if (!response?.ok) throw new Error(data?.detail || `Import failed (${response?.status || "network"})`);
+    updateImportProgress(88, "Building customer memory…", "Initializing durable customer memory from the imported history.");
+    await new Promise((resolve) => setTimeout(resolve, 300));
     showImportResult(`Imported ${Number(data.customers || 0).toLocaleString()} customers and ${Number(data.orders || 0).toLocaleString()} orders. Customer memory is ready.`, false);
     csvInspection = null;
-    if (button) button.textContent = "Imported";
-    setTimeout(() => location.reload(), 900);
+    if (button) button.textContent = "Added";
+    finishImportModal();
   } catch (error) {
+    const modal = $("#csv-import-modal");
+    if (modal) modal.hidden = true;
     showImportResult(error.message || "Import failed.", false);
-    if (button) { button.disabled = false; button.textContent = "Import"; }
+    if (button) { button.disabled = false; button.textContent = "Add to Customers"; }
   }
 }
 
@@ -131,6 +173,7 @@ async function init() {
   if (importButton) importButton.disabled = true;
   fileInput?.addEventListener("change", () => inspectCsvFile(fileInput.files?.[0]));
   importButton?.addEventListener("click", importCsv);
+  $("#go-to-customers")?.addEventListener("click", () => { location.href = "./index.html?view=customers"; });
   $("#connect-gmail")?.addEventListener("click", connectGmail);
   $("#sync-inbox")?.addEventListener("click", syncInbox);
   await refreshGmailStatus();
