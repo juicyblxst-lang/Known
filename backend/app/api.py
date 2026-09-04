@@ -59,14 +59,14 @@ async def list_imports(auth: AuthContext = Depends(require_auth)) -> list[dict]:
 @router.post("/imports/csv/inspect")
 async def inspect_csv(request: CSVImportRequest, auth: AuthContext = Depends(require_auth)) -> dict:
     try:
-        result = inspect_and_build(request.csv_text)
+        result = inspect_and_build(request.csv_text, auth.business_id)
         return {key: value for key, value in result.items() if key not in {"customers", "orders"}} | {"status": "ready"}
     except ValueError as exc: raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 @router.post("/imports/csv/commit")
 async def commit_csv(request: CSVImportRequest, auth: AuthContext = Depends(require_auth)) -> dict[str, object]:
     try:
-        result = inspect_and_build(request.csv_text)
+        result = inspect_and_build(request.csv_text, auth.business_id)
         counts = store.import_csv_records(auth.business_id, result["customers"], result["orders"])
         import_row = store.create_import(auth.business_id, request.file_name or "customer-import.csv", counts["customers"], counts["orders"])
         memory_counts = memory.import_customer_history(auth.business_id, result["customers"], result["orders"])
@@ -160,7 +160,8 @@ async def gmail_poll_all(x_known_cron_secret: str | None = Header(default=None, 
     if not expected or not x_known_cron_secret or not __import__("hmac").compare_digest(x_known_cron_secret,expected): raise HTTPException(status_code=401,detail="Invalid cron secret")
     if not integrations.configured or not gmail.configured or not sessions.configured: return {"status":"degraded","processed":0,"matched":0,"created":0,"failed":0,"reason":"Gmail dependencies are not configured"}
     totals={"processed":0,"matched":0,"ignored":0,"created":0,"failed":0}; errors=0
-    for connection in integrations.connections():
+    connections=integrations.connections()
+    for connection in connections:
         business_id=connection.get("business_id")
         if not business_id: continue
         try:
@@ -168,7 +169,7 @@ async def gmail_poll_all(x_known_cron_secret: str | None = Header(default=None, 
             for key,value in result.items(): totals[key]=totals.get(key,0)+int(value)
         except Exception:
             errors+=1; logger.exception("Gmail poll failed for business %s",business_id)
-    return {"status":"complete" if errors==0 else "partial","businesses":len(integrations.connections()),"errors":errors,**totals}
+    return {"status":"complete" if errors==0 else "partial","businesses":len(connections),"errors":errors,**totals}
 
 @router.post("/actions", response_model=ActionResponse)
 async def execute_action(request: ActionRequest, auth: AuthContext = Depends(require_auth)) -> ActionResponse:
@@ -190,10 +191,10 @@ async def shopify_connect(request: ShopifyConnectRequest, auth: AuthContext = De
 @router.post("/shopify/sync")
 async def shopify_sync(auth: AuthContext = Depends(require_auth)) -> dict[str, object]:
     current=installation(auth.business_id)
-    if not current: raise HTTPException(status_code=409, detail="Connect a Shopify store before syncing")
+    if not current: raise HTTPException(status_code=409,detail="Connect a Shopify store before syncing")
     try: return {"status":"complete", **sync_shop(auth.business_id,current["shop_domain"])}
     except (httpx.HTTPError, RuntimeError) as exc: raise upstream_error() from exc
-    except ValueError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc: raise HTTPException(status_code=409,detail=str(exc)) from exc
 
 @router.get("/shopify/callback")
 async def shopify_callback(request: Request) -> RedirectResponse:

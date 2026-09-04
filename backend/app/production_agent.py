@@ -52,13 +52,39 @@ class KnownAgent:
 
     @staticmethod
     def _extract_durable_memory(message: str) -> tuple[str, str] | None:
-        text = message.strip()
-        patterns = ((r"(?:please\s+)?remember(?:\s+that)?\s+(.+)$", "customer_preference"), (r"i\s+(?:always\s+)?prefer\s+(.+)$", "customer_preference"), (r"i\s+(?:always\s+)?choose\s+(.+)$", "customer_preference"), (r"i(?:'m| am)\s+allergic\s+to\s+(.+)$", "customer_constraint"), (r"my\s+size\s+is\s+(.+)$", "customer_preference"))
+        """Extract explicit, customer-authored facts without asking the model to invent memory.
+
+        Only first-person preferences/constraints or explicit remember instructions are promoted.
+        Ordinary support statements remain events unless the customer clearly states a durable fact.
+        """
+        text = " ".join(message.strip().split()).rstrip(".")
+        if not text:
+            return None
+
+        patterns: tuple[tuple[str, str], ...] = (
+            (r"(?:please\s+)?remember(?:\s+that)?\s+(.+)$", "customer_preference"),
+            (r"i\s+(?:always\s+)?prefer\s+(.+)$", "customer_preference"),
+            (r"i\s+(?:usually\s+)?choose\s+(.+)$", "customer_preference"),
+            (r"i\s+(?:really\s+)?like\s+(.+)$", "customer_preference"),
+            (r"i\s+(?:really\s+)?love\s+(.+)$", "customer_preference"),
+            (r"i\s+(?:really\s+)?don(?:'t|t)\s+like\s+(.+)$", "customer_preference"),
+            (r"i\s+(?:always\s+)?avoid\s+(.+)$", "customer_constraint"),
+            (r"i\s+(?:never\s+)?want\s+(.+)$", "customer_preference"),
+            (r"i\s+(?:really\s+)?don(?:'t|t)\s+want\s+(.+)$", "customer_constraint"),
+            (r"i(?:'m| am)\s+allergic\s+to\s+(.+)$", "customer_constraint"),
+            (r"i(?:'m| am)\s+(?:sensitive|intolerant)\s+to\s+(.+)$", "customer_constraint"),
+            (r"my\s+size\s+is\s+(.+)$", "customer_preference"),
+            (r"my\s+(?:usual|preferred)\s+size\s+is\s+(.+)$", "customer_preference"),
+            (r"(?:please\s+)?(?:ship|send)\s+my\s+orders?\s+(.+)$", "customer_preference"),
+            (r"(?:please\s+)?contact\s+me\s+(?:by|via)\s+(.+)$", "customer_preference"),
+        )
         for pattern, memory_type in patterns:
             match = re.match(pattern, text, re.IGNORECASE)
-            if match:
-                value = match.group(1).strip().rstrip(".")
-                if value: return f"Customer {memory_type.replace('_', ' ')}: {value}.", memory_type
+            if not match:
+                continue
+            value = match.group(1).strip()
+            if value and len(value) <= 500:
+                return f"Customer {memory_type.replace('_', ' ')}: {value}.", memory_type
         return None
 
     def _generate(self, system: str, context: dict[str, Any]) -> str:
@@ -98,7 +124,7 @@ Never claim an operational action has happened unless the backend has actually e
         if extracted:
             content, memory_type = extracted; memory_written, error = self._remember(business_id, customer_id, content, memory_type)
             if not memory_written: raise RuntimeError(f"Customer memory persistence failed: {error}")
-        event_written, event_error = self._record_event(business_id, customer_id, "support_message", {"recommended_action": action, "memory_used": len(memories)})
+        event_written, event_error = self._record_event(business_id, customer_id, "support_message", {"recommended_action": action, "memory_used": len(memories), "memory_written": memory_written})
         if not event_written: raise RuntimeError(f"Customer memory event persistence failed: {event_error}")
         return SupportResponse(customer_id=customer_id, reply=reply, memories_used=memories, memory_written=memory_written, recommended_action=action, degraded_memory=False)
 
