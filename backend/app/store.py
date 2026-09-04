@@ -1,7 +1,9 @@
 from __future__ import annotations
 import os
+import uuid
 from typing import Any
 import httpx
+
 class StructuredStore:
  def __init__(self): self.url=os.getenv("SUPABASE_URL","").rstrip("/"); self.key=os.getenv("SUPABASE_SERVICE_ROLE_KEY","")
  @property
@@ -28,6 +30,13 @@ class StructuredStore:
   if not normalized:return None
   rows=self._get("customers",{"business_id":f"eq.{business_id}","email":f"eq.{normalized}","archived_at":"is.null","select":"id,name,email,tier,created_at","limit":"1"})
   return rows[0] if rows else None
+ def create_customer(self,business_id,email,name="",tier="standard"):
+  normalized=email.strip().lower()
+  existing=self.customer_by_email(normalized,business_id)
+  if existing:return existing
+  customer={"id":str(uuid.uuid4()),"business_id":business_id,"name":(name or normalized.split("@",1)[0]).strip() or "Customer","email":normalized,"tier":tier}
+  created=self._post_many("customers",[customer])
+  return created[0] if created else customer
  def orders(self,customer_id,business_id=None):
   p={"customer_id":f"eq.{customer_id}","order":"created_at.desc"}
   if business_id:p["business_id"]=f"eq.{business_id}"
