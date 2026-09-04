@@ -29,7 +29,28 @@ class IntegrationStore:
     def update_tokens(self,connection_id:str,token:dict[str,Any])->None:
         expires=(datetime.now(timezone.utc)+timedelta(seconds=int(token.get("expires_in",3600)))).isoformat() if token.get("expires_in") else None
         self._request("PATCH","integration_connections",params={"id":f"eq.{connection_id}"},json={"access_token":token.get("access_token"),"token_expires_at":expires,"updated_at":datetime.now(timezone.utc).isoformat()})
-    def seen(self,business_id:str,external_id:str)->bool: return bool(self._request("GET","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","external_message_id":f"eq.{external_id}","select":"id","limit":"1"}))
+    def seen(self,business_id:str,external_id:str)->bool:
+        rows=self._request("GET","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","external_message_id":f"eq.{external_id}","processing_status":"eq.processed","select":"id","limit":"1"})
+        return bool(rows)
+    def claim_message(self,business_id:str,data:dict[str,Any])->dict[str,Any]|None:
+        external_id=data.get("external_message_id")
+        if not external_id: return None
+        existing=self._request("GET","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","external_message_id":f"eq.{external_id}","select":"*","limit":"1"})
+        now=datetime.now(timezone.utc).isoformat()
+        if existing:
+            row=existing[0]
+            if row.get("processing_status")=="processed": return None
+            updated=self._request("PATCH","external_messages",params={"id":f"eq.{row['id']}"},json={"processing_status":"processing","attempt_count":int(row.get("attempt_count") or 0)+1,"last_attempt_at":now,"last_error":None})
+            return updated[0] if updated else row
+        payload={"business_id":business_id,"provider":"gmail","external_message_id":external_id,"external_thread_id":data.get("external_thread_id"),"customer_id":None,"session_id":None,"direction":"inbound","sender_email":data.get("sender_email"),"recipient_email":data.get("recipient_email"),"subject":data.get("subject"),"body":data.get("body","") ,"received_at":now,"processed_at":None,"processing_status":"processing","attempt_count":1,"last_attempt_at":now}
+        rows=self._request("POST","external_messages",headers={"Prefer":"return=representation"},json=payload)
+        return rows[0] if rows else None
+    def mark_sent(self,business_id:str,external_id:str,sent_id:str,reply:str,customer_id:str,session_id:str)->None:
+        self._request("PATCH","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","external_message_id":f"eq.{external_id}"},json={"processing_status":"sent","outbound_message_id":sent_id,"outbound_body":reply,"customer_id":customer_id,"session_id":session_id,"last_error":None})
+    def mark_processed(self,business_id:str,external_id:str)->None:
+        self._request("PATCH","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","external_message_id":f"eq.{external_id}"},json={"processing_status":"processed","processed_at":datetime.now(timezone.utc).isoformat(),"last_error":None})
+    def mark_failed(self,business_id:str,external_id:str,error:str)->None:
+        self._request("PATCH","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","external_message_id":f"eq.{external_id}"},json={"processing_status":"failed","last_error":error[:1000]})
     def list_processed_messages(self,business_id:str,limit:int=50)->list[dict[str,Any]]: return self._request("GET","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","direction":"eq.inbound","select":"external_message_id,external_thread_id,customer_id,session_id,sender_email,subject,body,received_at","order":"received_at.desc","limit":str(limit)})
     def record_message(self,business_id:str,data:dict[str,Any],customer_id:str|None,session_id:str|None,direction:str,external_id:str|None=None)->None:
         payload={"business_id":business_id,"provider":"gmail","external_message_id":external_id or data["external_message_id"],"external_thread_id":data.get("external_thread_id"),"customer_id":customer_id,"session_id":session_id,"direction":direction,"sender_email":data.get("sender_email"),"recipient_email":data.get("recipient_email"),"subject":data.get("subject"),"body":data.get("body","") ,"received_at":datetime.now(timezone.utc).isoformat(),"processed_at":datetime.now(timezone.utc).isoformat()}
@@ -49,10 +70,17 @@ def process_gmail_messages(business_id:str,connection:dict[str,Any],agent:KnownA
     processed=matched=ignored=created=failed=0
     for raw in messages:
         parsed=gmail.parse_message(raw); external_id=parsed.get("external_message_id")
-        if not external_id or integration_store.seen(business_id,external_id): ignored+=1; continue
-        sender=parsed.get("sender_email","")
-        if not sender: ignored+=1; gmail.mark_read(token,external_id); continue
+        if not external_id: ignored+=1; continue
         try:
+            claim=integration_store.claim_message(business_id,parsed)
+            if claim is None:
+                ignored+=1; continue
+            if claim.get("processing_status")=="sent":
+                integration_store.mark_processed(business_id,external_id); gmail.mark_read(token,external_id); processed+=1; matched+=1; continue
+            sender=parsed.get("sender_email","")
+            if not sender:
+                integration_store.mark_failed(business_id,external_id,"Inbound Gmail message has no sender email")
+                ignored+=1; continue
             customer=_find_customer(store,business_id,sender)
             if customer is None:
                 if not hasattr(store,"create_customer"): raise RuntimeError("Customer store cannot create new customers")
@@ -64,8 +92,16 @@ def process_gmail_messages(business_id:str,connection:dict[str,Any],agent:KnownA
             orders=store.orders(customer["id"],business_id); request=SupportContextRequest(customer=Customer(**customer),message=body,conversation=list(session.messages),orders=[Order(**o) for o in orders])
             result=agent.handle(request,auth=AuthContext(user_id="gmail",business_id=business_id,email=customer.get("email")))
             sent=gmail.send(token,customer["email"],f"Re: {parsed.get('subject','Support request')}",result.reply,thread_id=parsed.get("external_thread_id"),in_reply_to=parsed.get("message_id_header"))
-            sessions.append(session_id,Message(role="assistant",content=result.reply)); integration_store.record_message(business_id,parsed,customer["id"],session_id,"inbound"); integration_store.record_message(business_id,{**parsed,"external_message_id":sent.get("id",f"sent:{external_id}"),"sender_email":parsed.get("recipient_email"),"recipient_email":customer["email"],"body":result.reply},customer["id"],session_id,"outbound",sent.get("id")); gmail.mark_read(token,external_id); processed+=1; matched+=1
-        except Exception:
+            sent_id=sent.get("id",f"sent:{external_id}")
+            integration_store.mark_sent(business_id,external_id,sent_id,result.reply,customer["id"],session_id)
+            sessions.append(session_id,Message(role="assistant",content=result.reply))
+            integration_store.record_message(business_id,{**parsed,"external_message_id":sent_id,"sender_email":parsed.get("recipient_email"),"recipient_email":customer["email"],"body":result.reply},customer["id"],session_id,"outbound",sent_id)
+            integration_store.mark_processed(business_id,external_id)
+            gmail.mark_read(token,external_id); processed+=1; matched+=1
+        except Exception as exc:
             failed+=1
+            if external_id:
+                try: integration_store.mark_failed(business_id,external_id,str(exc))
+                except Exception: pass
             continue
     return {"processed":processed,"matched":matched,"ignored":ignored,"created":created,"failed":failed}
