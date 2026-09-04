@@ -59,4 +59,4 @@ class StructuredStore:
  def archive_import(self,import_id,business_id):
   r=httpx.patch(f"{self.url}/rest/v1/imports",params={"id":f"eq.{import_id}","business_id":f"eq.{business_id}"},headers={**self._headers(),"Prefer":"return=representation"},json={"archived_at":"now()"},timeout=10);r.raise_for_status();d=r.json();return d[0] if d else None
  def delete_import(self,import_id,business_id):
-  r=httpx.delete(f"{self.url}/rest/v1/imports",params={"id":f"eq.{import_id}" ,"business_id":f"eq.{business_id}"},headers=self._headers(),timeout=10);r.raise_for_status();return True
+  r=httpx.delete(f"{self.url}/rest/v1/imports",params={"id":f"eq.{import_id}","business_id":f"eq.{business_id}"},headers=self._headers(),timeout=10);r.raise_for_status();return True
