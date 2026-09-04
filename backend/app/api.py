@@ -4,25 +4,31 @@ import logging
 import os
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from .auth import AuthContext, require_auth
 from .csv_import import inspect_and_build
+from .gmail import GmailIntegration
+from .integrations import IntegrationStore, process_gmail_messages
 from .memory import SibylMemory
 from .models import ActionRequest, ActionResponse
+from .production_agent import KnownAgent
 from .shopify import authorization_url, consume_oauth_state, create_oauth_state, exchange_code, installation, installation_by_shop, save_installation, sync_shop, validate_shop_domain, verify_oauth_hmac, verify_webhook, webhook_claim, webhook_complete, webhook_fail
 from .shopify_webhooks import register_webhooks
 from .store import StructuredStore
 from .supabase_sessions import SupabaseSessionStore
 from .workspace import WorkspaceResponse
 
-logger = logging.getLogger("known.shopify")
+logger = logging.getLogger("known.api")
 router = APIRouter(prefix="/api")
 store = StructuredStore()
 memory = SibylMemory()
 sessions = SupabaseSessionStore()
+gmail = GmailIntegration()
+integrations = IntegrationStore()
+agent = KnownAgent()
 
 def upstream_error() -> HTTPException:
     return HTTPException(status_code=502, detail="Upstream data service unavailable")
@@ -79,6 +85,90 @@ async def get_workspace(customer_id: str, memory_query: str = Query("customer hi
     except (httpx.HTTPError, ValueError): raise upstream_error()
     retrieved = memory.search(auth.business_id, customer_id, memory_query)
     return WorkspaceResponse(customer=customer, orders=orders, memory=retrieved.memories, memory_available=retrieved.available)
+
+@router.get("/onboarding/status")
+async def onboarding_status(auth: AuthContext = Depends(require_auth)) -> dict[str, bool]:
+    """Use durable Supabase app metadata instead of fragile browser session state."""
+    url=os.getenv("SUPABASE_URL","").rstrip("/"); key=os.getenv("SUPABASE_SERVICE_ROLE_KEY","")
+    if not url or not key: raise HTTPException(status_code=503,detail="Supabase authentication is not configured")
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response=await client.get(f"{url}/auth/v1/admin/users/{auth.user_id}",headers={"apikey":key,"Authorization":f"Bearer {key}"})
+        if response.status_code!=200: raise HTTPException(status_code=503,detail="Unable to read onboarding state")
+        metadata=response.json().get("app_metadata") or {}
+        return {"completed":bool(metadata.get("known_onboarding_completed"))}
+    except HTTPException: raise
+    except httpx.HTTPError as exc: raise HTTPException(status_code=503,detail="Authentication service unavailable") from exc
+
+@router.post("/onboarding/complete")
+async def complete_onboarding(auth: AuthContext = Depends(require_auth)) -> dict[str, bool]:
+    url=os.getenv("SUPABASE_URL","").rstrip("/"); key=os.getenv("SUPABASE_SERVICE_ROLE_KEY","")
+    if not url or not key: raise HTTPException(status_code=503,detail="Supabase authentication is not configured")
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            current=await client.get(f"{url}/auth/v1/admin/users/{auth.user_id}",headers={"apikey":key,"Authorization":f"Bearer {key}"})
+            current.raise_for_status(); metadata=dict(current.json().get("app_metadata") or {}); metadata["known_onboarding_completed"]=True
+            response=await client.put(f"{url}/auth/v1/admin/users/{auth.user_id}",headers={"apikey":key,"Authorization":f"Bearer {key}"},json={"app_metadata":metadata}); response.raise_for_status()
+        return {"completed":True}
+    except httpx.HTTPError as exc: raise HTTPException(status_code=503,detail="Unable to persist onboarding state") from exc
+
+@router.get("/integrations/gmail/status")
+async def gmail_status(auth: AuthContext = Depends(require_auth)) -> dict[str, object]:
+    if not integrations.configured: return {"configured":False,"connected":False,"email":None}
+    try: connection=integrations.connection(auth.business_id)
+    except (httpx.HTTPError,RuntimeError): raise upstream_error()
+    return {"configured":gmail.configured,"connected":bool(connection),"email":(connection or {}).get("external_account_id")}
+
+@router.get("/integrations/gmail/connect")
+async def gmail_connect(auth: AuthContext = Depends(require_auth)) -> RedirectResponse:
+    if not gmail.configured: raise HTTPException(status_code=503,detail="Google OAuth is not configured on the backend")
+    return RedirectResponse(gmail.authorize_url(gmail.state(auth.business_id)),status_code=307)
+
+@router.get("/integrations/gmail/callback")
+async def gmail_callback(request: Request) -> RedirectResponse:
+    frontend=os.getenv("KNOWN_PUBLIC_URL","/").rstrip("/") or "/"
+    try:
+        code=request.query_params.get("code"); state=request.query_params.get("state"); error=request.query_params.get("error")
+        if error: raise ValueError("Google authorization was not completed")
+        if not code or not state: raise ValueError("Missing Gmail OAuth parameters")
+        business_id=gmail.verify_state(state); token=gmail.exchange(code); profile=gmail.profile(token); integrations.save_connection(business_id,token,profile)
+        return RedirectResponse(url=f"{frontend}/?gmail=connected",status_code=303)
+    except Exception as exc:
+        logger.warning("Gmail OAuth callback failed: %s",exc)
+        return RedirectResponse(url=f"{frontend}/?gmail=error",status_code=303)
+
+@router.post("/integrations/gmail/sync")
+async def gmail_sync(auth: AuthContext = Depends(require_auth)) -> dict[str, object]:
+    if not gmail.configured: raise HTTPException(status_code=503,detail="Google OAuth is not configured on the backend")
+    if not sessions.configured: raise HTTPException(status_code=503,detail="Durable conversation persistence is not configured")
+    try:
+        connection=integrations.connection(auth.business_id)
+        if not connection: raise HTTPException(status_code=409,detail="Connect Gmail before syncing")
+        return {"status":"complete",**process_gmail_messages(auth.business_id,connection,agent,store,sessions,integrations,gmail)}
+    except HTTPException: raise
+    except httpx.HTTPStatusError as exc: raise HTTPException(status_code=502,detail="Gmail service unavailable") from exc
+    except (httpx.HTTPError,RuntimeError) as exc: raise upstream_error() from exc
+
+@router.get("/integrations/gmail/messages")
+async def gmail_messages(auth: AuthContext = Depends(require_auth)) -> dict[str,object]:
+    try: return {"messages":integrations.list_processed_messages(auth.business_id)}
+    except (httpx.HTTPError,RuntimeError): raise upstream_error()
+
+@router.post("/internal/gmail/poll-all")
+async def gmail_poll_all(x_known_cron_secret: str | None = Header(default=None, alias="X-Known-Cron-Secret")) -> dict[str,object]:
+    expected=os.getenv("KNOWN_GMAIL_CRON_SECRET","")
+    if not expected or not x_known_cron_secret or not __import__("hmac").compare_digest(x_known_cron_secret,expected): raise HTTPException(status_code=401,detail="Invalid cron secret")
+    if not integrations.configured or not gmail.configured or not sessions.configured: return {"status":"degraded","processed":0,"matched":0,"created":0,"failed":0,"reason":"Gmail dependencies are not configured"}
+    totals={"processed":0,"matched":0,"ignored":0,"created":0,"failed":0}; errors=0
+    for connection in integrations.connections():
+        business_id=connection.get("business_id")
+        if not business_id: continue
+        try:
+            result=process_gmail_messages(business_id,connection,agent,store,sessions,integrations,gmail)
+            for key,value in result.items(): totals[key]=totals.get(key,0)+int(value)
+        except Exception:
+            errors+=1; logger.exception("Gmail poll failed for business %s",business_id)
+    return {"status":"complete" if errors==0 else "partial","businesses":len(integrations.connections()),"errors":errors,**totals}
 
 @router.post("/actions", response_model=ActionResponse)
 async def execute_action(request: ActionRequest, auth: AuthContext = Depends(require_auth)) -> ActionResponse:
