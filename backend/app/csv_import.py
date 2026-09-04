@@ -14,11 +14,11 @@ def _clean(value: Any) -> str:
 
 
 def _norm(value: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", value.lower())
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
 
 
-def _pick(row: dict[str, str], *names: str) -> str:
-    normalized = {_norm(k): _clean(v) for k, v in row.items()}
+def _pick(row: dict[str, Any], *names: str) -> str:
+    normalized = {_norm(k): _clean(v) for k, v in row.items() if k is not None}
     wanted = [_norm(name) for name in names]
     for name in wanted:
         if normalized.get(name):
@@ -41,30 +41,41 @@ def _number(value: str) -> float:
         return 0.0
 
 
+def _reader(csv_text: str) -> csv.DictReader:
+    text = csv_text.lstrip("\ufeff").replace("\x00", "")
+    try:
+        dialect = csv.Sniffer().sniff(text[:8192], delimiters=",;\t|")
+    except csv.Error:
+        dialect = csv.excel
+    return csv.DictReader(io.StringIO(text, newline=""), dialect=dialect, restkey="__extra__")
+
+
 def inspect_and_build(csv_text: str) -> dict[str, Any]:
+    if not isinstance(csv_text, str) or not csv_text.strip():
+        raise ValueError("The selected file is empty")
     if len(csv_text.encode("utf-8")) > MAX_CSV_BYTES:
         raise ValueError("CSV file is larger than the 5 MB import limit")
-
-    reader = csv.DictReader(io.StringIO(csv_text.lstrip("\ufeff")))
-    if not reader.fieldnames:
-        raise ValueError("CSV has no header row")
-    headers = reader.fieldnames
-    normalized_headers = {_norm(h) for h in headers}
-    rows = list(reader)
+    try:
+        reader = _reader(csv_text)
+        if not reader.fieldnames:
+            raise ValueError("CSV has no header row")
+        headers = [str(h or "").strip() for h in reader.fieldnames]
+        normalized_headers = {_norm(h) for h in headers}
+        rows = list(reader)
+    except csv.Error as exc:
+        raise ValueError(f"Could not parse this CSV: {exc}") from exc
 
     if not any("email" in h for h in normalized_headers):
         raise ValueError("CSV must contain an email column so Known can recognize customers")
 
-    has_order_signals = any(
-        signal in normalized_headers or any(signal in h for h in normalized_headers)
-        for signal in ("financialstatus", "fulfillmentstatus", "total", "ordertotal", "lineitemname", "lineitemsku", "orderid", "ordernumber")
-    )
+    has_order_signals = any(signal in normalized_headers or any(signal in h for h in normalized_headers) for signal in ("financialstatus", "fulfillmentstatus", "total", "ordertotal", "lineitemname", "lineitemsku", "orderid", "ordernumber"))
     has_customer_signals = any(signal in normalized_headers for signal in ("customerid", "firstname", "lastname", "acceptsmarketing", "phonenumber"))
 
     customers: dict[str, dict[str, Any]] = {}
     orders: dict[str, dict[str, Any]] = {}
-
     for row in rows:
+        if not isinstance(row, dict):
+            continue
         email = _pick(row, "email", "customer_email", "email_address").lower()
         if not email:
             continue
@@ -75,10 +86,8 @@ def inspect_and_build(csv_text: str) -> dict[str, Any]:
             name = _pick(row, "name")
         if not name:
             name = email.split("@", 1)[0]
-
         customer_id = _stable_id("csv_customer", email)
         customers[email] = {"id": customer_id, "name": name, "email": email, "tier": _pick(row, "tier", "customer_tier") or "standard"}
-
         if has_order_signals:
             order_ref = _pick(row, "order_id", "order_number", "order_name", "name")
             if order_ref:
@@ -97,4 +106,6 @@ def inspect_and_build(csv_text: str) -> dict[str, Any]:
                 else:
                     orders[order_id] = {"id": order_id, "customer_id": customer_id, "status": _pick(row, "financial_status", "fulfillment_status", "status") or "unknown", "total": _number(_pick(row, "total", "total_price", "order_total", "amount")), "items": [item] if item else []}
 
+    if not customers:
+        raise ValueError("No customer records with email addresses were found in this CSV")
     return {"row_count": len(rows), "headers": headers, "customers": list(customers.values()), "orders": list(orders.values()), "customer_count": len(customers), "order_count": len(orders), "source_type": "order_export" if has_order_signals else "customer_export" if has_customer_signals else "customer_data"}
