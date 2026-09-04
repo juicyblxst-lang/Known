@@ -88,17 +88,8 @@ async def get_workspace(customer_id: str, memory_query: str = Query("customer hi
 
 @router.get("/onboarding/status")
 async def onboarding_status(auth: AuthContext = Depends(require_auth)) -> dict[str, bool]:
-    """Use durable Supabase app metadata instead of fragile browser session state."""
-    url=os.getenv("SUPABASE_URL","").rstrip("/"); key=os.getenv("SUPABASE_SERVICE_ROLE_KEY","")
-    if not url or not key: raise HTTPException(status_code=503,detail="Supabase authentication is not configured")
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            response=await client.get(f"{url}/auth/v1/admin/users/{auth.user_id}",headers={"apikey":key,"Authorization":f"Bearer {key}"})
-        if response.status_code!=200: raise HTTPException(status_code=503,detail="Unable to read onboarding state")
-        metadata=response.json().get("app_metadata") or {}
-        return {"completed":bool(metadata.get("known_onboarding_completed"))}
-    except HTTPException: raise
-    except httpx.HTTPError as exc: raise HTTPException(status_code=503,detail="Authentication service unavailable") from exc
+    """Return the onboarding state already resolved from the authenticated Supabase user."""
+    return {"completed": auth.onboarding_completed}
 
 @router.post("/onboarding/complete")
 async def complete_onboarding(auth: AuthContext = Depends(require_auth)) -> dict[str, bool]:
