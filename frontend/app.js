@@ -1,4 +1,4 @@
-import { getSession, signOut, onboardingStatus, invalidateSession } from "./auth.js";
+import { getSession, signOut, onboardingStatus, invalidateSession, authenticatedFetch } from "./auth.js";
 
 const API = window.KNOWN_API_URL || "";
 let session = null;
@@ -10,17 +10,6 @@ let selectedOrders = [];
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const apiUrl = (path) => `${API}${path}`;
-
-async function authenticatedFetch(path, options = {}) {
-  if (!session) return null;
-  let response = await fetch(apiUrl(path), { ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${session.accessToken}` } });
-  if (response.status !== 401) return response;
-  session = await getSession({ forceRefresh: true });
-  if (!session) { invalidateSession(); location.href = "./login.html"; return null; }
-  const retry = await fetch(apiUrl(path), { ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${session.accessToken}` } });
-  if (retry.status === 401) { invalidateSession(); location.href = "./login.html"; return null; }
-  return retry;
-}
 
 function switchView(view) {
   const title = { overview: "Overview", customers: "Customers", inbox: "Inbox", settings: "Settings", conversation: "Customer workspace" }[view] || "Overview";
@@ -65,7 +54,6 @@ function getFilteredCustomers() { const query = $("#customer-search")?.value.tri
 async function selectCustomer(customer, preferredSessionId = null) { const response = await authenticatedFetch(`/api/workspace/${encodeURIComponent(customer.id)}`); if (!response) return; if (!response.ok) { $("#detail-meta").textContent = "Unable to load this customer right now."; return; } const data = await response.json(); renderCustomerDetail(data); if (preferredSessionId) { sessionId = preferredSessionId; localStorage.setItem(`known.session.${customer.id}`, preferredSessionId); } switchView("customers"); }
 async function loadCustomers() { const response = await authenticatedFetch("/api/customers"); if (!response) return; if (!response.ok) throw new Error(`Unable to load customers (${response.status})`); customers = await response.json(); renderOverview(); renderCustomerDirectory(); if (customers.length) await selectCustomer(customers[0]); }
 function setupProfile() { const user = session.user, name = displayName(user); $("#profile-name").textContent = name; $("#profile-email").textContent = user?.email || "—"; $("#profile-avatar").textContent = initials(name); const profile = $("#profile-button"), menu = $("#profile-menu"); profile.addEventListener("click", () => { const open = profile.getAttribute("aria-expanded") === "true"; profile.setAttribute("aria-expanded", String(!open)); menu.hidden = open; }); $("#logout-button").addEventListener("click", async () => { await signOut(); location.href = "./"; }); }
-function setupSettings() { const importToggle = $("#notify-import"), conversationToggle = $("#notify-conversations"); importToggle.checked = localStorage.getItem("known.notify.import") !== "false"; conversationToggle.checked = localStorage.getItem("known.notify.conversations") !== "false"; importToggle.addEventListener("change", () => localStorage.setItem("known.notify.import", String(importToggle.checked))); conversationToggle.addEventListener("change", () => localStorage.setItem("known.notify.conversations", String(conversationToggle.checked))); }
 async function loadConversation(customer, newSession = false) { if (newSession) { sessionId = null; $("#conversation-session").textContent = "New session"; $("#messages").innerHTML = `<div class="empty-state">Start a new conversation with ${customer.name}.</div>`; return; } const id = sessionId || localStorage.getItem(`known.session.${customer.id}`); if (!id) { $("#conversation-session").textContent = "No conversation yet"; $("#messages").innerHTML = `<div class="empty-state">No conversation loaded.</div>`; return; } const response = await authenticatedFetch(`/api/sessions/${encodeURIComponent(id)}?customer_id=${encodeURIComponent(customer.id)}`); if (!response || !response.ok) return; const data = await response.json(); sessionId = data.session_id; $("#conversation-session").textContent = `Session: ${data.persistence}`; renderConversation(data.messages || []); }
 function addMessage(label, text, className) { const el = document.createElement("div"); el.className = `msg ${className}`; el.innerHTML = `<small></small><p></p>`; el.querySelector("small").textContent = label; el.querySelector("p").textContent = text; $("#messages").appendChild(el); $("#messages").scrollTop = $("#messages").scrollHeight; }
 function renderConversation(items) { $("#messages").innerHTML = ""; items.forEach((item) => addMessage(item.role === "assistant" ? "KNOWN" : selectedCustomer.name.toUpperCase(), item.content, item.role === "assistant" ? "agent-msg" : "customer-msg")); }
@@ -73,5 +61,5 @@ async function sendMessage(message) { const response = await authenticatedFetch(
 function setupConversation() { $("#new-session").addEventListener("click", () => selectedCustomer && loadConversation(selectedCustomer, true)); $("#composer").addEventListener("submit", async (event) => { event.preventDefault(); if (!selectedCustomer) return; const input = $("#message"), button = event.currentTarget.querySelector("button"), message = input.value.trim(); if (!message) return; input.value = ""; button.disabled = true; try { await sendMessage(message); } catch (error) { addMessage("SYSTEM", error.message || "Unable to reach Known.", "agent-msg"); } finally { button.disabled = false; input.focus(); } }); }
 async function openConversation() { if (!selectedCustomer) return; $("#conversation-title").textContent = selectedCustomer.name; $("#conversation-meta").textContent = [selectedCustomer.tier, selectedCustomer.email].filter(Boolean).join(" · "); $("#message").disabled = false; $("#composer button").disabled = false; await loadConversation(selectedCustomer); switchView("conversation"); }
 window.addEventListener("known:gmail-session", async (event) => { const { customerId, sessionId: gmailSessionId } = event.detail || {}; const customer = customers.find((item) => item.id === customerId); if (!customer) return; selectedCustomer = customer; sessionId = gmailSessionId || null; await selectCustomer(customer, sessionId); await openConversation(); });
-async function bootstrap() { try { bindNavigation(); setupSettings(); setupConversation(); session = await getSession(); if (!session) { location.href = "./login.html"; return; } await onboardingStatus(session); setupProfile(); await loadCustomers(); $("#customer-search").addEventListener("input", () => renderCustomerDirectory(getFilteredCustomers())); $("#detail-name").addEventListener("dblclick", openConversation); const params = new URLSearchParams(location.search); if (params.get("view") === "customers") switchView("customers"); setConnection(true); } catch (error) { setConnection(false, "Unavailable"); invalidateSession(); location.href = "./login.html"; } }
+async function bootstrap() { try { bindNavigation(); setupConversation(); session = await getSession(); if (!session) { location.href = "./login.html"; return; } await onboardingStatus(session); setupProfile(); await loadCustomers(); $("#customer-search").addEventListener("input", () => renderCustomerDirectory(getFilteredCustomers())); $("#detail-name").addEventListener("dblclick", openConversation); const params = new URLSearchParams(location.search); if (params.get("view") === "customers") switchView("customers"); setConnection(true); } catch (error) { setConnection(false, "Unavailable"); invalidateSession(); location.href = "./login.html"; } }
 bootstrap();
