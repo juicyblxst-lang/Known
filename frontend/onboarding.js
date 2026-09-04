@@ -16,10 +16,15 @@ import { getSession, onboardingStatus, completeOnboarding } from "./auth.js";
   $("#import-csv").onclick = () => open(csvModal);
   $("#email-cancel").onclick = () => close(emailModal);
   $("#csv-cancel").onclick = () => close(csvModal);
-  $("#email-continue").onclick = () => {
+  $("#email-continue").onclick = async () => {
     const button = $("#email-continue"), status = $("#email-status");
     button.disabled = true; status.textContent = "Opening Google…";
-    location.href = "/api/integrations/gmail/connect";
+    try {
+      const response = await fetch("/api/gmail/connect", { headers: { Authorization: `Bearer ${session.accessToken}` } });
+      const data = await response.json();
+      if (!response.ok || !data.authorization_url) throw new Error(data.detail || "Gmail connection is not configured.");
+      location.href = data.authorization_url;
+    } catch (error) { status.textContent = error.message || "Unable to connect Gmail."; button.disabled = false; }
   };
   let csvText = "";
   let fileName = "";
@@ -30,7 +35,7 @@ import { getSession, onboardingStatus, completeOnboarding } from "./auth.js";
     if (!file.name.toLowerCase().endsWith(".csv")) { status.textContent = "Please choose a CSV file."; return; }
     csvText = await file.text(); status.textContent = "Inspecting your CSV…";
     try {
-      const response = await fetch("/api/imports/csv/inspect", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` }, body: JSON.stringify({ csv_text: csvText }) });
+      const response = await fetch("/api/imports/csv/inspect", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` }, body: JSON.stringify({ csv_text: csvText, file_name: fileName }) });
       const data = await response.json(); if (!response.ok) throw new Error(data.detail || "Could not inspect CSV");
       summary.hidden = false; summary.innerHTML = `<strong>${file.name}</strong><br>${Number(data.row_count || 0).toLocaleString()} data rows detected<br>Customers: ${Number(data.customer_count || 0).toLocaleString()}<br>Orders: ${Number(data.order_count || 0).toLocaleString()}<br>${(data.headers || []).length} columns detected`;
       status.textContent = "File inspected. Ready to continue."; csvButton.textContent = "Next"; csvButton.disabled = false;
