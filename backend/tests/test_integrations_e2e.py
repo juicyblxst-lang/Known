@@ -26,6 +26,7 @@ class FakeIntegrationStore:
         if external_id in self.rows and self.rows[external_id].get("processing_status") == "processed": return None
         row = self.rows.setdefault(external_id, {"id": external_id, "processing_status": "processing", "attempt_count": 0})
         row["processing_status"] = "processing"; row["attempt_count"] += 1
+        self.records.append(("inbound", None, data.get("body", "")))
         return row
     def mark_sent(self, business_id, external_id, sent_id, reply, customer_id, session_id):
         self.rows[external_id].update(processing_status="sent", outbound_message_id=sent_id, outbound_body=reply, customer_id=customer_id, session_id=session_id)
