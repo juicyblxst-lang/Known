@@ -12,17 +12,11 @@ class StructuredStore:
  def _get(self,table,params):
   if not self.configured: raise RuntimeError("Structured backend is not configured")
   try:
-   r=httpx.get(f"{self.url}/rest/v1/{table}",params=params,headers=self._headers(),timeout=10)
-   r.raise_for_status()
-   d=r.json()
-   return d if isinstance(d,list) else []
+   r=httpx.get(f"{self.url}/rest/v1/{table}",params=params,headers=self._headers(),timeout=10); r.raise_for_status(); d=r.json(); return d if isinstance(d,list) else []
   except httpx.HTTPStatusError as exc:
-   detail=exc.response.text[:300].replace("\n"," ")
-   print(f"StructuredStore GET failed table={table} status={exc.response.status_code} detail={detail}",flush=True)
-   raise
+   print(f"StructuredStore GET failed table={table} status={exc.response.status_code} detail={exc.response.text[:300].replace(chr(10),' ')}",flush=True); raise
   except (httpx.HTTPError, ValueError) as exc:
-   print(f"StructuredStore GET failed table={table} error={type(exc).__name__}: {exc}",flush=True)
-   raise
+   print(f"StructuredStore GET failed table={table} error={type(exc).__name__}: {exc}",flush=True); raise
  def _post_many(self,table,rows):
   if not self.configured:raise RuntimeError("Structured backend is not configured")
   if not rows:return []
@@ -39,33 +33,20 @@ class StructuredStore:
  def customer_by_email(self,email,business_id):
   normalized=email.strip().lower()
   if not normalized:return None
-  rows=self._get("customers",{"business_id":f"eq.{business_id}","email":f"eq.{normalized}","archived_at":"is.null","select":"id,name,email,tier,created_at","limit":"1"})
-  return rows[0] if rows else None
+  rows=self._get("customers",{"business_id":f"eq.{business_id}","email":f"eq.{normalized}","archived_at":"is.null","select":"id,name,email,tier,created_at","limit":"1"}); return rows[0] if rows else None
  def create_customer(self,business_id,email,name="",tier="standard"):
-  normalized=email.strip().lower()
-  existing=self.customer_by_email(normalized,business_id)
+  normalized=email.strip().lower(); existing=self.customer_by_email(normalized,business_id)
   if existing:return existing
-  customer={"id":str(uuid.uuid4()),"business_id":business_id,"name":(name or normalized.split("@",1)[0]).strip() or "Customer","email":normalized,"tier":tier}
-  created=self._post_many("customers",[customer])
-  return created[0] if created else customer
+  customer={"id":str(uuid.uuid4()),"business_id":business_id,"name":(name or normalized.split("@",1)[0]).strip() or "Customer","email":normalized,"tier":tier}; created=self._post_many("customers",[customer]); return created[0] if created else customer
  def orders(self,customer_id,business_id=None):
   p={"customer_id":f"eq.{customer_id}","order":"created_at.desc"}
   if business_id:p["business_id"]=f"eq.{business_id}"
   return self._get("orders",p)
  def import_csv_records(self,business_id,customers,orders):
-  """Upsert imports while preserving an existing tenant customer identity by email."""
-  id_map: dict[str,str] = {}
-  reconciled=[]
+  id_map: dict[str,str] = {}; reconciled=[]
   for row in customers:
-   email=str(row.get("email") or "").strip().lower()
-   existing=self.customer_by_email(email,business_id) if email else None
-   canonical_id=str(existing["id"]) if existing else str(row["id"])
-   id_map[str(row["id"])] = canonical_id
-   reconciled.append({**row,"id":canonical_id,"business_id":business_id,"email":email})
-  reconciled_orders=[]
-  for row in orders:
-   original_customer_id=str(row.get("customer_id") or "")
-   reconciled_orders.append({**row,"customer_id":id_map.get(original_customer_id,original_customer_id),"business_id":business_id})
+   email=str(row.get("email") or "").strip().lower(); existing=self.customer_by_email(email,business_id) if email else None; canonical_id=str(existing["id"]) if existing else str(row["id"]); id_map[str(row["id"])]=canonical_id; reconciled.append({**row,"id":canonical_id,"business_id":business_id,"email":email})
+  reconciled_orders=[{**row,"customer_id":id_map.get(str(row.get("customer_id") or ""),str(row.get("customer_id") or "")),"business_id":business_id} for row in orders]
   return {"customers":len(self._post_many("customers",reconciled)),"orders":len(self._post_many("orders",reconciled_orders))}
  def set_customer_archived(self,customer_id,business_id,archived=True):
   r=httpx.patch(f"{self.url}/rest/v1/customers",params={"id":f"eq.{customer_id}","business_id":f"eq.{business_id}"},headers={**self._headers(),"Prefer":"return=representation"},json={"archived_at":"now()" if archived else None},timeout=10);r.raise_for_status();d=r.json();return d[0] if d else None
@@ -78,4 +59,4 @@ class StructuredStore:
  def archive_import(self,import_id,business_id):
   r=httpx.patch(f"{self.url}/rest/v1/imports",params={"id":f"eq.{import_id}","business_id":f"eq.{business_id}"},headers={**self._headers(),"Prefer":"return=representation"},json={"archived_at":"now()"},timeout=10);r.raise_for_status();d=r.json();return d[0] if d else None
  def delete_import(self,import_id,business_id):
-  r=httpx.delete(f"{self.url}/rest/v1/imports",params={"id":f"eq.{import_id}" ,"business_id":f"eq.{business_id}"},headers=self._headers(),timeout=10);r.raise_for_status();return True
+  r=httpx.delete(f"{self.url}/rest/v1/imports",params={"id":f"eq.{import_id}","business_id":f"eq.{business_id}"},headers=self._headers(),timeout=10);r.raise_for_status();return True
