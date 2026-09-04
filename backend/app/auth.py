@@ -12,6 +12,7 @@ class AuthContext(BaseModel):
     user_id: str
     business_id: str
     email: str | None = None
+    onboarding_completed: bool = False
 
 
 def _headers(service_key: str) -> dict[str, str]:
@@ -89,11 +90,17 @@ async def require_auth(authorization: str | None = Header(default=None)) -> Auth
         raise HTTPException(status_code=401, detail="Invalid or expired access token")
 
     user = response.json()
-    business_id = (user.get("app_metadata") or {}).get("business_id")
+    metadata = dict(user.get("app_metadata") or {})
+    business_id = metadata.get("business_id")
     if not business_id:
         try:
             business_id = await _provision_business(url, service_key, user)
         except (httpx.HTTPStatusError, httpx.HTTPError, KeyError, ValueError) as exc:
             raise HTTPException(status_code=503, detail="Unable to provision Known workspace") from exc
 
-    return AuthContext(user_id=user["id"], business_id=str(business_id), email=user.get("email"))
+    return AuthContext(
+        user_id=user["id"],
+        business_id=str(business_id),
+        email=user.get("email"),
+        onboarding_completed=bool(metadata.get("known_onboarding_completed")),
+    )
