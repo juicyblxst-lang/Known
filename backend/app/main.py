@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from .api import router
+from .gmail_api import router as gmail_router
 from .auth import AuthContext, require_auth
 from .models import Message, SupportContextRequest, SupportRequest, SupportResponse
 from .production_agent import KnownAgent
@@ -16,6 +17,7 @@ from .supabase_sessions import SupabaseSessionStore
 app = FastAPI(title="Known", version="0.7.0")
 app.add_middleware(CORSMiddleware, allow_origins=[x.strip() for x in os.getenv("KNOWN_CORS_ORIGINS", "http://localhost:8000").split(",") if x.strip()], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.include_router(router)
+app.include_router(gmail_router)
 agent = KnownAgent(); durable_sessions = SupabaseSessionStore(); store = StructuredStore()
 
 class SupportSessionResponse(SupportResponse):
@@ -32,7 +34,7 @@ def ready() -> dict[str, object]:
     provider = os.getenv("LLM_PROVIDER", "openai").lower()
     llm_ok = bool(os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")) if provider == "deepseek" else bool(os.getenv("OPENAI_API_KEY"))
     checks={"frontend":(Path(__file__).resolve().parents[2]/"frontend").exists(),"supabase":store.configured and durable_sessions.configured,"llm":llm_ok,"memory":bool(memory.get("configured"))}
-    return {"status":"ready" if all(checks.values()) else "degraded","checks":checks,"memory":memory,"llm_provider":provider}
+    return {"status":"ready" if all(checks.values()) else "degraded","checks":checks,"memory":memory,"sibyl":memory,"llm_provider":provider}
 
 @app.post("/api/support",response_model=SupportSessionResponse)
 async def support(request: SupportRequest,session_id:str|None=None,auth:AuthContext=Depends(require_auth))->SupportSessionResponse:
