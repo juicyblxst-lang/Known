@@ -35,35 +35,16 @@ async function refreshSession(){
 }
 export async function refreshCurrentSession(){ return refreshSession(); }
 
-// Every authenticated API request gets one controlled 401 recovery. This is the
-// single place that handles a rotated/expired Supabase access token so feature
-// modules cannot accidentally keep using a stale bearer token.
 export async function authenticatedFetch(path, options = {}) {
   let session = await getSession();
-  if (!session) {
-    const error = new Error("Your session has expired. Please sign in again.");
-    error.status = 401;
-    throw error;
-  }
-  const request = (accessToken) => fetch(path, {
-    ...options,
-    headers: { ...(options.headers || {}), Authorization: `Bearer ${accessToken}` }
-  });
+  if (!session) { const error = new Error("Your session has expired. Please sign in again."); error.status = 401; throw error; }
+  const request = (accessToken) => fetch(path, { ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${accessToken}` } });
   let response = await request(session.accessToken);
   if (response.status !== 401) return response;
-
   session = await refreshSession();
-  if (!session) {
-    const error = new Error("Your session has expired. Please sign in again.");
-    error.status = 401;
-    throw error;
-  }
+  if (!session) { const error = new Error("Your session has expired. Please sign in again."); error.status = 401; throw error; }
   response = await request(session.accessToken);
-  if (response.status === 401) {
-    const error = new Error("Your Known session is no longer valid. Please sign in again.");
-    error.status = 401;
-    throw error;
-  }
+  if (response.status === 401) { const error = new Error("Your Known session is no longer valid. Please sign in again."); error.status = 401; throw error; }
   return response;
 }
 
