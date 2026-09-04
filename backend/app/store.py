@@ -42,7 +42,20 @@ class StructuredStore:
   if business_id:p["business_id"]=f"eq.{business_id}"
   return self._get("orders",p)
  def import_csv_records(self,business_id,customers,orders):
-  cr=[{**r,"business_id":business_id} for r in customers];orr=[{**r,"business_id":business_id} for r in orders];return {"customers":len(self._post_many("customers",cr)),"orders":len(self._post_many("orders",orr))}
+  """Upsert imports while preserving an existing tenant customer identity by email."""
+  id_map: dict[str,str] = {}
+  reconciled=[]
+  for row in customers:
+   email=str(row.get("email") or "").strip().lower()
+   existing=self.customer_by_email(email,business_id) if email else None
+   canonical_id=str(existing["id"]) if existing else str(row["id"])
+   id_map[str(row["id"])] = canonical_id
+   reconciled.append({**row,"id":canonical_id,"business_id":business_id,"email":email})
+  reconciled_orders=[]
+  for row in orders:
+   original_customer_id=str(row.get("customer_id") or "")
+   reconciled_orders.append({**row,"customer_id":id_map.get(original_customer_id,original_customer_id),"business_id":business_id})
+  return {"customers":len(self._post_many("customers",reconciled)),"orders":len(self._post_many("orders",reconciled_orders))}
  def set_customer_archived(self,customer_id,business_id,archived=True):
   r=httpx.patch(f"{self.url}/rest/v1/customers",params={"id":f"eq.{customer_id}","business_id":f"eq.{business_id}"},headers={**self._headers(),"Prefer":"return=representation"},json={"archived_at":"now()" if archived else None},timeout=10);r.raise_for_status();d=r.json();return d[0] if d else None
  def delete_customer(self,customer_id,business_id):
