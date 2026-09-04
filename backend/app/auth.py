@@ -23,7 +23,7 @@ def _headers(service_key: str) -> dict[str, str]:
 
 
 async def _provision_business(url: str, service_key: str, user: dict) -> str:
-    """Provision the user's first Known tenant using the schema that actually exists."""
+    """Provision the user's first Known tenant and its existing membership record."""
     user_id = str(user["id"])
     headers = _headers(service_key)
     metadata = dict(user.get("app_metadata") or {})
@@ -43,6 +43,13 @@ async def _provision_business(url: str, service_key: str, user: dict) -> str:
             json={"id": business_id, "name": business_name},
         )
         created.raise_for_status()
+
+        membership = await client.post(
+            f"{url}/rest/v1/business_memberships",
+            headers={**headers, "Prefer": "resolution=ignore-duplicates"},
+            json={"user_id": user_id, "business_id": business_id, "role": "owner"},
+        )
+        membership.raise_for_status()
 
         metadata["business_id"] = business_id
         auth_update = await client.put(
