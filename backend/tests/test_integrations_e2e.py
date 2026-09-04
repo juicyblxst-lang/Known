@@ -4,6 +4,7 @@ from app.integrations import process_gmail_messages
 class FakeStore:
     def _get(self, table, params):
         return [{"id": "customer-1", "name": "Maya Rivera", "email": "maya@example.com", "tier": "standard"}]
+    def customer_by_email(self, email, business_id): return self._get("customers", {})[0] if email == "maya@example.com" else None
     def orders(self, customer_id, business_id):
         return [{"id": "10482", "customer_id": customer_id, "status": "shipped", "total": 125.0, "items": ["Sneakers"]}]
 
@@ -51,6 +52,10 @@ class FakeAgent:
 def test_gmail_to_customer_to_sibyl_to_agent_to_gmail():
     integration = FakeIntegrationStore()
     result = process_gmail_messages("business-a", {"access_token": "token"}, FakeAgent(), FakeStore(), FakeSessions(), integration, FakeGmail())
-    assert result == {"processed": 1, "matched": 1, "ignored": 0}
+    assert result["processed"] == 1
+    assert result["matched"] == 1
+    assert result["ignored"] == 0
+    assert result["created"] == 0
+    assert result["failed"] == 0
     assert any(r[0] == "inbound" for r in integration.records)
     assert any(r[0] == "outbound" for r in integration.records)
