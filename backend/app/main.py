@@ -8,6 +8,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from .api import router
 from .gmail_api import router as gmail_router
+from .settings_api import router as settings_router
 from .auth import AuthContext, require_auth
 from .models import Message, SupportContextRequest, SupportRequest, SupportResponse
 from .production_agent import KnownAgent
@@ -18,6 +19,7 @@ app = FastAPI(title="Known", version="0.7.0")
 app.add_middleware(CORSMiddleware, allow_origins=[x.strip() for x in os.getenv("KNOWN_CORS_ORIGINS", "http://localhost:8000").split(",") if x.strip()], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.include_router(router)
 app.include_router(gmail_router)
+app.include_router(settings_router)
 agent = KnownAgent(); durable_sessions = SupabaseSessionStore(); store = StructuredStore()
 
 class SupportSessionResponse(SupportResponse):
