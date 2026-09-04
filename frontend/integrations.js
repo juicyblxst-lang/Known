@@ -11,7 +11,7 @@ const api = async (path, options = {}) => {
 async function refreshGmailStatus() {
   const response = await api("/api/integrations/gmail/status");
   if (!response) return;
-  const data = await response.json();
+  const data = await response.json().catch(() => ({}));
   const node = $("#gmail-status"); const button = $("#connect-gmail");
   if (!node || !button) return;
   node.textContent = data.connected ? `Connected: ${data.email || "support inbox"}` : (data.configured ? "Not connected yet." : "Google OAuth is not configured on the backend.");
@@ -19,11 +19,10 @@ async function refreshGmailStatus() {
 }
 
 async function connectGmail() {
-  const response = await api("/api/integrations/gmail/connect");
-  if (!response) return;
-  if (response.redirected) { location.href = response.url; return; }
-  if (response.ok) location.href = response.url;
-  else alert((await response.json().catch(() => ({}))).detail || "Unable to start Gmail connection.");
+  const response = await api("/api/gmail/connect");
+  const data = await response?.json().catch(() => ({}));
+  if (!response?.ok || !data.authorization_url) { alert(data?.detail || "Unable to start Gmail connection."); return; }
+  location.href = data.authorization_url;
 }
 
 async function importCsv() {
@@ -39,7 +38,7 @@ async function importCsv() {
 function renderInbox(messages, syncResult = null) {
   const list = $("#inbox-list"); const status = $("#inbox-status");
   if (!list || !status) return;
-  if (syncResult) status.textContent = `Sync complete · ${syncResult.processed} processed · ${syncResult.matched} matched · ${syncResult.ignored} ignored`;
+  if (syncResult) status.textContent = `Sync complete · ${syncResult.processed} processed · ${syncResult.matched} matched · ${syncResult.created || 0} new customers · ${syncResult.failed || 0} failed`;
   if (!messages.length) { list.innerHTML = ""; return; }
   list.innerHTML = "";
   messages.forEach((message) => {
