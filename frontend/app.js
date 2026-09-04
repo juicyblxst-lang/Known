@@ -1,4 +1,4 @@
-import { getSession, signOut } from "./auth.js";
+import { getSession, signOut, onboardingStatus, invalidateSession } from "./auth.js";
 
 const API = window.KNOWN_API_URL || "";
 let session = null;
@@ -15,9 +15,11 @@ async function authenticatedFetch(path, options = {}) {
   if (!session) return null;
   let response = await fetch(apiUrl(path), { ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${session.accessToken}` } });
   if (response.status !== 401) return response;
-  session = await getSession();
-  if (!session) { await signOut(); location.href = "./"; return null; }
-  return fetch(apiUrl(path), { ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${session.accessToken}` } });
+  session = await getSession({ forceRefresh: true });
+  if (!session) { invalidateSession(); location.href = "./login.html"; return null; }
+  const retry = await fetch(apiUrl(path), { ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${session.accessToken}` } });
+  if (retry.status === 401) { invalidateSession(); location.href = "./login.html"; return null; }
+  return retry;
 }
 
 function switchView(view) {
@@ -71,5 +73,5 @@ async function sendMessage(message) { const response = await authenticatedFetch(
 function setupConversation() { $("#new-session").addEventListener("click", () => selectedCustomer && loadConversation(selectedCustomer, true)); $("#composer").addEventListener("submit", async (event) => { event.preventDefault(); if (!selectedCustomer) return; const input = $("#message"), button = event.currentTarget.querySelector("button"), message = input.value.trim(); if (!message) return; input.value = ""; button.disabled = true; try { await sendMessage(message); } catch (error) { addMessage("SYSTEM", error.message || "Unable to reach Known.", "agent-msg"); } finally { button.disabled = false; input.focus(); } }); }
 async function openConversation() { if (!selectedCustomer) return; $("#conversation-title").textContent = selectedCustomer.name; $("#conversation-meta").textContent = [selectedCustomer.tier, selectedCustomer.email].filter(Boolean).join(" · "); $("#message").disabled = false; $("#composer button").disabled = false; await loadConversation(selectedCustomer); switchView("conversation"); }
 window.addEventListener("known:gmail-session", async (event) => { const { customerId, sessionId: gmailSessionId } = event.detail || {}; const customer = customers.find((item) => item.id === customerId); if (!customer) return; selectedCustomer = customer; sessionId = gmailSessionId || null; await selectCustomer(customer, sessionId); await openConversation(); });
-async function bootstrap() { try { bindNavigation(); setupSettings(); setupConversation(); session = await getSession(); if (!session) { location.href = "./login.html"; return; } setupProfile(); setConnection(true); await loadCustomers(); $("#customer-search").addEventListener("input", () => renderCustomerDirectory(getFilteredCustomers())); $("#detail-name").addEventListener("dblclick", openConversation); const params = new URLSearchParams(location.search); if (params.get("view") === "customers") switchView("customers"); } catch (error) { setConnection(false, "Unavailable"); $("#recent-activity").innerHTML = `<div class="empty-state">${error.message || "Unable to initialize Known."}</div>`; } }
+async function bootstrap() { try { bindNavigation(); setupSettings(); setupConversation(); session = await getSession(); if (!session) { location.href = "./login.html"; return; } await onboardingStatus(session); setupProfile(); await loadCustomers(); $("#customer-search").addEventListener("input", () => renderCustomerDirectory(getFilteredCustomers())); $("#detail-name").addEventListener("dblclick", openConversation); const params = new URLSearchParams(location.search); if (params.get("view") === "customers") switchView("customers"); setConnection(true); } catch (error) { setConnection(false, "Unavailable"); invalidateSession(); location.href = "./login.html"; } }
 bootstrap();
