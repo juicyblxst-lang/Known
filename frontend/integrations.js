@@ -1,11 +1,20 @@
-import { getSession } from "./auth.js";
+import { getSession, refreshCurrentSession } from "./auth.js";
 
 const API = window.KNOWN_API_URL || "";
 const $ = (s) => document.querySelector(s);
 const api = async (path, options = {}) => {
-  const session = await getSession();
+  let session = await getSession();
   if (!session) throw new Error("Your session has expired. Please sign in again.");
-  return fetch(`${API}${path}`, { ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${session.accessToken}` } });
+
+  const request = (accessToken) => fetch(`${API}${path}`, { ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${accessToken}` } });
+  let response = await request(session.accessToken);
+
+  if (response.status === 401) {
+    session = await refreshCurrentSession();
+    if (!session) throw new Error("Your session has expired. Please sign in again.");
+    response = await request(session.accessToken);
+  }
+  return response;
 };
 
 async function refreshGmailStatus() {
