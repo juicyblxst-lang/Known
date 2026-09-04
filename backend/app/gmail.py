@@ -14,7 +14,9 @@ class GmailIntegration:
     def state(self,business_id:str)->str:
         payload=f"{business_id}:{int(time.time())}"; sig=hmac.new(self.secret.encode(),payload.encode(),hashlib.sha256).hexdigest(); return base64.urlsafe_b64encode(f"{payload}:{sig}".encode()).decode()
     def verify_state(self,value:str,max_age:int=600)->str:
-        raw=base64.urlsafe_b64decode(value.encode()).decode(); business_id,issued,signature=raw.rsplit(":",2); payload=f"{business_id}:{issued}"
+        try: raw=base64.urlsafe_b64decode(value.encode()).decode(); business_id,issued,signature=raw.rsplit(":",2)
+        except Exception as exc: raise ValueError("invalid OAuth state") from exc
+        payload=f"{business_id}:{issued}"
         if not hmac.compare_digest(signature,hmac.new(self.secret.encode(),payload.encode(),hashlib.sha256).hexdigest()): raise ValueError("invalid OAuth state")
         if int(time.time())-int(issued)>max_age: raise ValueError("expired OAuth state")
         return business_id
@@ -31,11 +33,16 @@ class GmailIntegration:
         return [self._request(token,"GET",f"messages/{x['id']}",params={"format":"full"}) for x in data.get("messages",[])]
     def mark_read(self,token:str,message_id:str)->None: self._request(token,"POST",f"messages/{message_id}/modify",json={"removeLabelIds":["UNREAD"]})
     @staticmethod
+    def _text_parts(payload:dict[str,Any]):
+        if payload.get("mimeType")=="text/plain" and payload.get("body",{}).get("data"):
+            try: return [base64.urlsafe_b64decode(payload["body"]["data"]+"===").decode("utf-8",errors="replace")]
+            except Exception: return []
+        out=[]
+        for part in payload.get("parts") or []: out.extend(GmailIntegration._text_parts(part))
+        return out
+    @staticmethod
     def parse_message(message:dict[str,Any])->dict[str,Any]:
-        headers={h["name"].lower():h["value"] for h in message.get("payload",{}).get("headers",[])}; body=""; payload=message.get("payload",{}); parts=payload.get("parts") or [payload]
-        for part in parts:
-            if part.get("mimeType")=="text/plain" and part.get("body",{}).get("data"):
-                body=base64.urlsafe_b64decode(part["body"]["data"]+"===").decode("utf-8",errors="replace"); break
+        headers={h["name"].lower():h["value"] for h in message.get("payload",{}).get("headers",[])}; parts=GmailIntegration._text_parts(message.get("payload",{})); body="\n\n".join(x.strip() for x in parts if x.strip())
         sender_name,sender_email=parseaddr(headers.get("from","")); _,recipient_email=parseaddr(headers.get("to",""))
         return {"external_message_id":message.get("id"),"external_thread_id":message.get("threadId"),"sender_name":sender_name,"sender_email":sender_email.lower(),"recipient_email":recipient_email.lower(),"subject":headers.get("subject",""),"body":body,"message_id_header":headers.get("message-id")}
     def send(self,token:str,to:str,subject:str,body:str,thread_id:str|None=None,in_reply_to:str|None=None)->dict[str,Any]:
