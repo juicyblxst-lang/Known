@@ -4,12 +4,12 @@ const API = window.KNOWN_API_URL || "";
 const $ = (s) => document.querySelector(s);
 const api = async (path, options = {}) => {
   const session = await getSession();
-  if (!session) return null;
+  if (!session) throw new Error("Your session has expired. Please sign in again.");
   return fetch(`${API}${path}`, { ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${session.accessToken}` } });
 };
 
 async function refreshGmailStatus() {
-  const response = await api("/api/integrations/gmail/status");
+  const response = await api("/api/integrations/gmail/status").catch(() => null);
   if (!response) return;
   const data = await response.json().catch(() => ({}));
   const node = $("#gmail-status"); const button = $("#connect-gmail");
@@ -37,6 +37,14 @@ function showImportResult(message, hidden = false) {
 function setCsvState(message) {
   const node = $("#csv-file-state");
   if (node) node.textContent = message;
+}
+
+async function readCsvFile(file) {
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder("utf-16le").decode(buffer);
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder("utf-16be").decode(buffer);
+  return new TextDecoder("utf-8", { fatal: false }).decode(buffer);
 }
 
 function openImportModal() {
@@ -79,12 +87,20 @@ async function inspectCsvFile(file) {
     showImportResult("Please choose a CSV file.", false);
     return;
   }
+  if (file.size > 5 * 1024 * 1024) {
+    csvInspection = null;
+    if (button) { button.disabled = true; button.textContent = "Add to Customers"; }
+    setCsvState("This CSV is larger than 5 MB.");
+    showImportResult("Please choose a CSV smaller than 5 MB.", false);
+    return;
+  }
 
   if (button) { button.disabled = true; button.textContent = "Inspecting…"; }
   setCsvState(`Reading ${file.name}…`);
   showImportResult(`Reading ${file.name}…`, false);
   try {
-    const csvText = await file.text();
+    const csvText = await readCsvFile(file);
+    if (!csvText.trim()) throw new Error("The selected CSV is empty.");
     const response = await api("/api/imports/csv/inspect", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -98,18 +114,16 @@ async function inspectCsvFile(file) {
     if (button) { button.disabled = false; button.textContent = "Add to Customers"; }
   } catch (error) {
     csvInspection = null;
-    setCsvState("Unable to read this CSV.");
-    showImportResult(error.message || "Could not inspect CSV.", false);
+    const message = error?.message || "Could not inspect CSV.";
+    setCsvState(message);
+    showImportResult(message, false);
     if (button) { button.disabled = true; button.textContent = "Add to Customers"; }
   }
 }
 
 async function importCsv() {
   const button = $("#import-csv");
-  if (!csvInspection) {
-    await inspectCsvFile($("#csv-file")?.files?.[0]);
-    return;
-  }
+  if (!csvInspection) { await inspectCsvFile($("#csv-file")?.files?.[0]); return; }
   if (button) { button.disabled = true; button.textContent = "Adding…"; }
   openImportModal();
   updateImportProgress(8, "Preparing…", `Preparing ${csvInspection.fileName} for your customer workspace.`);
@@ -133,7 +147,8 @@ async function importCsv() {
   } catch (error) {
     const modal = $("#csv-import-modal");
     if (modal) modal.hidden = true;
-    showImportResult(error.message || "Import failed.", false);
+    const message = error?.message || "Import failed.";
+    showImportResult(message, false);
     if (button) { button.disabled = false; button.textContent = "Add to Customers"; }
   }
 }
@@ -149,10 +164,7 @@ function renderInbox(messages, syncResult = null) {
     row.innerHTML = `<span class="directory-avatar">✉</span><span class="directory-info"><strong></strong><small></small></span>`;
     row.querySelector("strong").textContent = message.subject || "No subject";
     row.querySelector("small").textContent = `${message.sender_email || "Unknown sender"} · ${message.body || ""}`;
-    row.addEventListener("click", () => {
-      if (!message.customer_id) return;
-      window.dispatchEvent(new CustomEvent("known:gmail-session", { detail: { customerId: message.customer_id, sessionId: message.session_id } }));
-    });
+    row.addEventListener("click", () => { if (message.customer_id) window.dispatchEvent(new CustomEvent("known:gmail-session", { detail: { customerId: message.customer_id, sessionId: message.session_id } })); });
     list.appendChild(row);
   });
 }
