@@ -14,14 +14,25 @@ class FakeSessions:
     def get_or_create(self, session_id, customer_id, business_id):
         self.sessions.setdefault(session_id, type("S", (), {"messages": []})())
         return self.sessions[session_id]
+    def get(self, session_id, customer_id, business_id): return self.sessions.get(session_id)
     def append(self, session_id, message): self.sessions[session_id].messages.append(message)
 
 
 class FakeIntegrationStore:
-    def __init__(self): self.ids = set(); self.records = []
-    def seen(self, business_id, external_id): return external_id in self.ids
+    def __init__(self): self.rows = {}; self.records = []
+    def seen(self, business_id, external_id): return self.rows.get(external_id, {}).get("processing_status") == "processed"
+    def claim_message(self, business_id, data):
+        external_id = data["external_message_id"]
+        if external_id in self.rows and self.rows[external_id].get("processing_status") == "processed": return None
+        row = self.rows.setdefault(external_id, {"id": external_id, "processing_status": "processing", "attempt_count": 0})
+        row["processing_status"] = "processing"; row["attempt_count"] += 1
+        return row
+    def mark_sent(self, business_id, external_id, sent_id, reply, customer_id, session_id):
+        self.rows[external_id].update(processing_status="sent", outbound_message_id=sent_id, outbound_body=reply, customer_id=customer_id, session_id=session_id)
+    def mark_processed(self, business_id, external_id): self.rows[external_id]["processing_status"] = "processed"
+    def mark_failed(self, business_id, external_id, error): self.rows[external_id].update(processing_status="failed", last_error=error)
     def remember_identity(self, business_id, customer_id, email): self.records.append(("identity", customer_id, email))
-    def record_message(self, business_id, data, customer_id, session_id, direction, external_id=None): self.ids.add(external_id or data["external_message_id"]); self.records.append((direction, customer_id, data.get("body", "")))
+    def record_message(self, business_id, data, customer_id, session_id, direction, external_id=None): self.records.append((direction, customer_id, data.get("body", "")))
     def update_tokens(self, *args): pass
 
 
@@ -57,5 +68,6 @@ def test_gmail_to_customer_to_sibyl_to_agent_to_gmail():
     assert result["ignored"] == 0
     assert result["created"] == 0
     assert result["failed"] == 0
+    assert integration.rows["m1"]["processing_status"] == "processed"
     assert any(r[0] == "inbound" for r in integration.records)
     assert any(r[0] == "outbound" for r in integration.records)
