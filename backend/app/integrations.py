@@ -1,6 +1,6 @@
 from __future__ import annotations
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 import httpx
 from .auth import AuthContext
@@ -23,10 +23,13 @@ class IntegrationStore:
     def connections(self)->list[dict[str,Any]]:
         return self._request("GET","integration_connections",params={"provider":"eq.gmail","select":"*","order":"updated_at.desc"})
     def save_connection(self,business_id:str,token:dict[str,Any],profile:dict[str,Any])->dict[str,Any]|None:
-        payload={"business_id":business_id,"provider":"gmail","external_account_id":profile.get("emailAddress"),"access_token":token.get("access_token",""),"refresh_token":token.get("refresh_token"),"token_expires_at":datetime.now(timezone.utc).timestamp()+int(token.get("expires_in",3600)) if token.get("expires_in") else None,"metadata":{"email":profile.get("emailAddress"),"history_id":profile.get("historyId")}}
+        expires=(datetime.now(timezone.utc)+timedelta(seconds=int(token.get("expires_in",3600)))).isoformat() if token.get("expires_in") else None
+        payload={"business_id":business_id,"provider":"gmail","external_account_id":profile.get("emailAddress"),"access_token":token.get("access_token",""),"refresh_token":token.get("refresh_token"),"token_expires_at":expires,"metadata":{"email":profile.get("emailAddress"),"history_id":profile.get("historyId")}}
         rows=self._request("POST","integration_connections",params={"on_conflict":"business_id,provider"},headers={"Prefer":"resolution=merge-duplicates,return=representation"},json=payload)
         return rows[0] if rows else self.connection(business_id)
-    def update_tokens(self,connection_id:str,token:dict[str,Any])->None: self._request("PATCH","integration_connections",params={"id":f"eq.{connection_id}"},json={"access_token":token.get("access_token"),"token_expires_at":datetime.now(timezone.utc).timestamp()+int(token.get("expires_in",3600)) if token.get("expires_in") else None,"updated_at":datetime.now(timezone.utc).isoformat()})
+    def update_tokens(self,connection_id:str,token:dict[str,Any])->None:
+        expires=(datetime.now(timezone.utc)+timedelta(seconds=int(token.get("expires_in",3600)))).isoformat() if token.get("expires_in") else None
+        self._request("PATCH","integration_connections",params={"id":f"eq.{connection_id}"},json={"access_token":token.get("access_token"),"token_expires_at":expires,"updated_at":datetime.now(timezone.utc).isoformat()})
     def seen(self,business_id:str,external_id:str)->bool: return bool(self._request("GET","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","external_message_id":f"eq.{external_id}","select":"id","limit":"1"}))
     def list_processed_messages(self,business_id:str,limit:int=50)->list[dict[str,Any]]:
         return self._request("GET","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","direction":"eq.inbound","select":"external_message_id,external_thread_id,customer_id,session_id,sender_email,subject,body,received_at","order":"received_at.desc","limit":str(limit)})
@@ -62,6 +65,5 @@ def process_gmail_messages(business_id:str,connection:dict[str,Any],agent:KnownA
             sessions.append(session_id,Message(role="assistant",content=result.reply)); integration_store.record_message(business_id,parsed,customer["id"],session_id,"inbound"); integration_store.record_message(business_id,{**parsed,"external_message_id":sent.get("id",f"sent:{external_id}"),"sender_email":parsed.get("recipient_email"),"recipient_email":customer["email"],"body":result.reply},customer["id"],session_id,"outbound",sent.get("id")); gmail.mark_read(token,external_id); processed+=1; matched+=1
         except Exception:
             failed+=1
-            # Leave failed messages unread so the next scheduled poll can retry them.
             continue
     return {"processed":processed,"matched":matched,"ignored":ignored,"created":created,"failed":failed}
