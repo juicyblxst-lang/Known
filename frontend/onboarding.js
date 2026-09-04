@@ -1,26 +1,25 @@
-import { getSession } from "./auth.js";
+import { getSession, onboardingStatus, completeOnboarding } from "./auth.js";
 
 (async function bootstrap() {
   const session = await getSession();
   if (!session) { location.href = "./login.html"; return; }
-  if (sessionStorage.getItem("known.new-user") !== "true") { location.href = "./index.html"; return; }
+  try { const state = await onboardingStatus(session); if (state.completed) { location.href = "./index.html"; return; } } catch { /* allow onboarding to continue; backend remains authoritative */ }
   const $ = (s) => document.querySelector(s);
   const emailModal = $("#email-modal"), csvModal = $("#csv-modal");
-  const open = (el) => { el.hidden = false; }, close = (el) => { el.hidden = true; };
-  $("#skip-for-now").onclick = () => { sessionStorage.removeItem("known.new-user"); location.href = "./index.html"; };
+  const open = (el) => { if (el) el.hidden = false; }, close = (el) => { if (el) el.hidden = true; };
+  const finish = async (destination = "./index.html") => {
+    try { await completeOnboarding(session); } catch (error) { console.warn("Unable to persist onboarding state", error); }
+    sessionStorage.removeItem("known.new-user"); location.href = destination;
+  };
+  $("#skip-for-now").onclick = () => finish();
   $("#connect-email").onclick = () => open(emailModal);
   $("#import-csv").onclick = () => open(csvModal);
   $("#email-cancel").onclick = () => close(emailModal);
   $("#csv-cancel").onclick = () => close(csvModal);
-  $("#email-continue").onclick = async () => {
+  $("#email-continue").onclick = () => {
     const button = $("#email-continue"), status = $("#email-status");
     button.disabled = true; status.textContent = "Opening Google…";
-    try {
-      const response = await fetch("/api/gmail/connect", { headers: { Authorization: `Bearer ${session.accessToken}` } });
-      const data = await response.json();
-      if (!response.ok || !data.authorization_url) throw new Error(data.detail || "Gmail connection is not configured.");
-      location.href = data.authorization_url;
-    } catch (error) { status.textContent = error.message || "Unable to connect Gmail."; button.disabled = false; }
+    location.href = "/api/integrations/gmail/connect";
   };
   let csvText = "";
   let fileName = "";
@@ -43,8 +42,7 @@ import { getSession } from "./auth.js";
       const response = await fetch("/api/imports/csv/commit", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.accessToken}` }, body: JSON.stringify({ csv_text: csvText, file_name: fileName }) });
       const data = await response.json(); if (!response.ok) throw new Error(data.detail || "Import failed");
       status.textContent = `Imported ${Number(data.customers || 0).toLocaleString()} customers and ${Number(data.orders || 0).toLocaleString()} orders.`;
-      sessionStorage.removeItem("known.new-user");
-      location.href = "./index.html?imported=1";
+      await finish("./index.html?imported=1");
     } catch (error) { status.textContent = error.message || "Import failed"; csvButton.disabled = false; }
   };
 })();
