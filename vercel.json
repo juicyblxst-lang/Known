@@ -3,6 +3,14 @@
     {
       "source": "/api/:path*",
       "destination": "https://known-sbbp.onrender.com/api/:path*"
+    },
+    {
+      "source": "/",
+      "destination": "/frontend/landing.html"
+    },
+    {
+      "source": "/:path*",
+      "destination": "/frontend/:path*"
     }
   ],
   "headers": [
