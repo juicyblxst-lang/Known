@@ -8,7 +8,7 @@ async function getConfig() {
 async function supabaseRequest(path, options = {}) {
   const config = await getConfig();
   if (!config.supabase_url || !config.supabase_anon_key) throw new Error("Supabase authentication is not configured.");
-  return fetch(`${config.supabase_url}/auth/v1${path}`, { ...options, headers: { apikey: config.supabase_anon_key, ...(options.body ? {"Content-Type":"application/json"}:{}), ...(options.headers || {}) } });
+  return fetch(`${config.supabase_url}/auth/v1${path}`, { ...options, headers: { apikey: config.supabase_anon_key, ...(options.body ? {"Content-Type":"application/json"}:{}), ...(options.headers || {}) });
 }
 export async function authConfigured(){ const config=await getConfig(); return Boolean(config.supabase_url&&config.supabase_anon_key); }
 function clearSession(){localStorage.removeItem("known.access_token");localStorage.removeItem("known.refresh_token");}
@@ -66,7 +66,13 @@ export async function getSession({forceRefresh=false}={}){
 }
 export async function onboardingStatus(session,{retryAuth=true}={}){
   let response=await fetch("/api/onboarding/status",{headers:{Authorization:`Bearer ${session.accessToken}`}});
-  if(response.status===401&&retryAuth){const refreshed=await getSession({forceRefresh:true});if(refreshed){session=refreshed;response=await fetch("/api/onboarding/status",{headers:{Authorization:`Bearer ${session.accessToken}`});}}
+  if(response.status===401&&retryAuth){
+    const refreshed=await getSession({forceRefresh:true});
+    if(refreshed){
+      session=refreshed;
+      response=await fetch("/api/onboarding/status",{headers:{Authorization:`Bearer ${session.accessToken}`}});
+    }
+  }
   if(!response.ok){const error=new Error(response.status===401?"Your Known session is no longer valid. Please sign in again.":"Unable to verify onboarding state.");error.status=response.status;throw error;}
   return response.json();
 }
