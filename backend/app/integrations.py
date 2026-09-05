@@ -8,16 +8,17 @@ from .gmail import GmailIntegration
 from .models import Customer, Message, Order, SupportContextRequest
 from .production_agent import KnownAgent
 from .store import StructuredStore
+from .supabase_credentials import service_headers, service_key
 from .supabase_sessions import SupabaseSessionStore
 
 class IntegrationStore:
     def __init__(self)->None:
-        self.url=os.getenv("SUPABASE_URL","").rstrip("/"); self.key=os.getenv("SUPABASE_SERVICE_ROLE_KEY","")
+        self.url=os.getenv("SUPABASE_URL","").rstrip("/"); self.key=service_key()
     @property
     def configured(self)->bool: return bool(self.url and self.key)
     def _request(self,method:str,table:str,**kwargs:Any)->list[dict[str,Any]]:
         if not self.configured: raise RuntimeError("Integration storage is not configured")
-        r=httpx.request(method,f"{self.url}/rest/v1/{table}",headers={"apikey":self.key,"Authorization":f"Bearer {self.key}","Content-Type":"application/json"},timeout=15,**kwargs); r.raise_for_status(); data=r.json() if r.content else []; return data if isinstance(data,list) else []
+        r=httpx.request(method,f"{self.url}/rest/v1/{table}",headers=service_headers(self.key),timeout=15,**kwargs); r.raise_for_status(); data=r.json() if r.content else []; return data if isinstance(data,list) else []
     def connection(self,business_id:str)->dict[str,Any]|None:
         rows=self._request("GET","integration_connections",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","select":"*","limit":"1"}); return rows[0] if rows else None
     def connections(self)->list[dict[str,Any]]: return self._request("GET","integration_connections",params={"provider":"eq.gmail","select":"*","order":"updated_at.desc"})
