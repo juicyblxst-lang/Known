@@ -11,9 +11,8 @@ def service_key() -> str:
 def service_headers(key: str | None = None) -> dict[str, str]:
     """Build headers for privileged Supabase REST/Auth calls.
 
-    New sb_secret keys are opaque API keys, not JWTs, so they must not be sent
-    as Authorization: Bearer. Legacy service_role keys retain the old header
-    for backward compatibility during migration.
+    New opaque secret keys are sent through apikey only; legacy credentials
+    retain the bearer header during migration.
     """
     value = key or service_key()
     headers = {"apikey": value, "Content-Type": "application/json"}
