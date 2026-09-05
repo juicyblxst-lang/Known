@@ -8,6 +8,7 @@ import httpx
 
 from .models import Message
 from .session_store import ConversationSession
+from .supabase_credentials import service_headers, service_key
 
 
 class SupabaseSessionStore:
@@ -15,7 +16,7 @@ class SupabaseSessionStore:
 
     def __init__(self) -> None:
         self.url = os.getenv("SUPABASE_URL", "").rstrip("/")
-        self.key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+        self.key = service_key()
 
     @property
     def configured(self) -> bool:
@@ -23,7 +24,7 @@ class SupabaseSessionStore:
 
     @property
     def headers(self) -> dict[str, str]:
-        return {"apikey": self.key, "Authorization": f"Bearer {self.key}", "Content-Type": "application/json"}
+        return service_headers(self.key)
 
     def _request(self, method: str, table: str, **kwargs: Any) -> list[dict[str, Any]]:
         response = httpx.request(method, f"{self.url}/rest/v1/{table}", headers=self.headers, timeout=10, **kwargs)
