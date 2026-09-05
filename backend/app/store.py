@@ -3,12 +3,13 @@ import os
 import uuid
 from typing import Any
 import httpx
+from .supabase_credentials import service_headers, service_key
 
 class StructuredStore:
- def __init__(self): self.url=os.getenv("SUPABASE_URL","").rstrip("/"); self.key=os.getenv("SUPABASE_SERVICE_ROLE_KEY","")
+ def __init__(self): self.url=os.getenv("SUPABASE_URL","").rstrip("/"); self.key=service_key()
  @property
  def configured(self): return bool(self.url and self.key)
- def _headers(self): return {"apikey":self.key,"Authorization":f"Bearer {self.key}","Content-Type":"application/json"}
+ def _headers(self): return service_headers(self.key)
  def _get(self,table,params):
   if not self.configured: raise RuntimeError("Structured backend is not configured")
   try:
