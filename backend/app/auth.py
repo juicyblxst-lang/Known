@@ -6,6 +6,7 @@ import uuid
 import httpx
 from fastapi import Header, HTTPException
 from pydantic import BaseModel
+from .supabase_credentials import service_headers, service_key
 
 
 class AuthContext(BaseModel):
@@ -15,18 +16,14 @@ class AuthContext(BaseModel):
     onboarding_completed: bool = False
 
 
-def _headers(service_key: str) -> dict[str, str]:
-    return {
-        "apikey": service_key,
-        "Authorization": f"Bearer {service_key}",
-        "Content-Type": "application/json",
-    }
+def _headers(service_key_value: str) -> dict[str, str]:
+    return service_headers(service_key_value)
 
 
-async def _provision_business(url: str, service_key: str, user: dict) -> str:
+async def _provision_business(url: str, service_key_value: str, user: dict) -> str:
     """Provision the user's first Known tenant and its existing membership record."""
     user_id = str(user["id"])
-    headers = _headers(service_key)
+    headers = _headers(service_key_value)
     metadata = dict(user.get("app_metadata") or {})
     existing = metadata.get("business_id")
     if existing:
@@ -69,11 +66,11 @@ async def require_auth(authorization: str | None = Header(default=None)) -> Auth
         raise HTTPException(status_code=401, detail="Bearer access token required")
 
     url = os.getenv("SUPABASE_URL", "").rstrip("/")
-    service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-    verification_key = os.getenv("SUPABASE_ANON_KEY", "") or service_key
+    service_key_value = service_key()
+    verification_key = os.getenv("SUPABASE_ANON_KEY", "") or service_key_value
     if not url or not verification_key:
         raise HTTPException(status_code=503, detail="Supabase authentication is not configured")
-    if not service_key:
+    if not service_key_value:
         raise HTTPException(status_code=503, detail="Supabase workspace provisioning is not configured")
 
     token = authorization.split(" ", 1)[1].strip()
@@ -94,7 +91,7 @@ async def require_auth(authorization: str | None = Header(default=None)) -> Auth
     business_id = metadata.get("business_id")
     if not business_id:
         try:
-            business_id = await _provision_business(url, service_key, user)
+            business_id = await _provision_business(url, service_key_value, user)
         except (httpx.HTTPStatusError, httpx.HTTPError, KeyError, ValueError) as exc:
             raise HTTPException(status_code=503, detail="Unable to provision Known workspace") from exc
 
