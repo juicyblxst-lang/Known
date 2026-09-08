@@ -72,6 +72,11 @@ class KnownAgent:
             (r"my\s+(?:usual|preferred)\s+size\s+is\s+(.+)$", "customer_preference"),
             (r"(?:please\s+)?(?:ship|send)\s+my\s+orders?\s+(.+)$", "customer_preference"),
             (r"(?:please\s+)?contact\s+me\s+(?:by|via)\s+(.+)$", "customer_preference"),
+            # Natural-language approval/automation constraints are durable even when
+            # the customer does not use an explicit "remember" command. Keep the
+            # customer's wording intact so the LLM can interpret the constraint.
+            (r"(.{1,500}\b(?:never|don(?:'t|t)|do not|avoid)\b.{1,500}\b(?:automatically|auto[- ]?ship|without\s+(?:my\s+)?(?:approval|permission|asking)|confirm(?:ation)?|ask\s+me|check\s+with\s+me)\b.{0,300})$", "customer_constraint"),
+            (r"(.{1,500}\b(?:confirm|ask|check)\s+(?:with\s+me\s+)?first\b.{0,500}\b(?:replace|replacement|ship|send)\b.{0,300})$", "customer_constraint"),
         )
         for pattern, memory_type in patterns:
             match = re.match(pattern, text, re.IGNORECASE)
@@ -134,6 +139,8 @@ Never claim an operational action has happened unless the backend has actually e
     def _action(message: str, memories: list[dict]) -> str | None:
         text = message.lower(); memory_text = " ".join(str(m.get("content", "")) for m in memories).lower()
         if any(word in text for word in ("refund", "return", "cancel")): return "Review order eligibility and offer the applicable return/refund workflow."
+        if any(word in text for word in ("replace", "replacement", "damaged")) and any(x in memory_text for x in ("automatically", "auto-ship", "auto ship", "without my approval", "without approval", "confirm first", "ask me first")):
+            return "Confirm the customer's approval before arranging a replacement; do not auto-ship it."
         if any(word in text for word in ("late", "where is", "tracking", "delivery")):
             if any(x in memory_text for x in ("expedited", "urgent", "time-sensitive")): return "Prioritize the latest shipment check and reflect the customer's previous expedited preference."
             if any(x in memory_text for x in ("monitor", "previous delayed")): return "Check the latest shipment status and proactively monitor the delivery, reflecting the customer's previous support preference."
