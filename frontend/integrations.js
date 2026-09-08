@@ -77,7 +77,24 @@ async function importCsv() {
   }
 }
 
-function renderInbox(messages, syncResult = null) { const list = $("#inbox-list"); const status = $("#inbox-status"); if (!list || !status) return; if (syncResult) status.textContent = `Sync complete · ${syncResult.processed} processed · ${syncResult.matched} matched · ${syncResult.created || 0} new customers · ${syncResult.failed || 0} failed`; if (!messages.length) { list.innerHTML = ""; if (!syncResult) status.textContent = "No processed support conversations yet."; return; } list.innerHTML = ""; messages.forEach((message) => { const row = document.createElement("button"); row.type = "button"; row.className = "directory-row"; row.innerHTML = `<span class="directory-avatar">✉</span><span class="directory-info"><strong></strong><small></small></span>`; row.querySelector("strong").textContent = message.subject || "No subject"; row.querySelector("small").textContent = `${message.sender_email || "Unknown sender"} · ${message.body || ""}`; row.addEventListener("click", () => { if (message.customer_id) window.dispatchEvent(new CustomEvent("known:gmail-session", { detail: { customerId: message.customer_id, sessionId: message.session_id } })); }); list.appendChild(row); }); }
+function renderInbox(messages, syncResult = null) {
+  const list = $("#inbox-list"); const status = $("#inbox-status"); if (!list || !status) return;
+  if (syncResult) status.textContent = `Sync complete · ${syncResult.processed} processed · ${syncResult.matched} matched · ${syncResult.created || 0} new customers · ${syncResult.failed || 0} failed`;
+  if (!messages.length) { list.innerHTML = ""; if (!syncResult) status.textContent = "No processed support conversations yet."; return; }
+  list.innerHTML = "";
+  messages.forEach((message) => {
+    const row = document.createElement("button"); row.type = "button"; row.className = "directory-row";
+    row.innerHTML = `<span class="directory-avatar">✉</span><span class="directory-info"><strong></strong><small></small></span>`;
+    row.querySelector("strong").textContent = message.subject || "No subject";
+    row.querySelector("small").textContent = `${message.sender_email || "Unknown sender"} · ${message.body || ""}`;
+    row.addEventListener("click", () => {
+      const customerId = message.customer_id || null;
+      const sessionId = message.session_id || (message.external_thread_id ? `gmail:${message.external_thread_id}` : null);
+      window.dispatchEvent(new CustomEvent("known:gmail-session", { detail: { customerId, sessionId, senderEmail: message.sender_email } }));
+    });
+    list.appendChild(row);
+  });
+}
 
 async function loadInboxMessages({showLoading = false} = {}) {
   if (inboxLoading) return inboxMessages;
@@ -109,7 +126,6 @@ async function handleViewChange(event) {
   const view = event.detail?.view;
   if (view === "settings") await refreshGmailStatus();
   if (view === "inbox") {
-    // Render cached/existing messages immediately; synchronization happens after the view is visible.
     await loadInboxMessages({showLoading: !inboxMessages});
     syncInbox({background: true}).catch((error) => console.warn("Background Gmail sync failed:", error));
   }
