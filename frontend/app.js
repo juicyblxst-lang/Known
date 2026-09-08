@@ -7,6 +7,7 @@ let customers = [];
 let selectedCustomer = null;
 let selectedOrders = [];
 let gmailConnected = false;
+let awaitingNewSessionMessage = false;
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -76,28 +77,42 @@ function getFilteredCustomers() { const query = $("#customer-search")?.value.tri
 async function selectCustomer(customer, preferredSessionId = null) { const response = await authenticatedFetch(`/api/workspace/${encodeURIComponent(customer.id)}`); if (!response) return; if (!response.ok) { $("#detail-meta").textContent = "Unable to load this customer right now."; return; } const data = await response.json(); renderCustomerDetail(data); if (preferredSessionId) { sessionId = preferredSessionId; localStorage.setItem(`known.session.${customer.id}`, preferredSessionId); } switchView("customers"); }
 async function loadCustomers() { const response = await authenticatedFetch("/api/customers"); if (!response) return; if (!response.ok) { const error = new Error(`Unable to load customers (${response.status})`); error.status = response.status; throw error; } customers = await response.json(); renderOverview(); renderCustomerDirectory(); if (customers.length) await selectCustomer(customers[0]); }
 function setupProfile() { const user = session.user, name = displayName(user); $("#profile-name").textContent = name; $("#profile-email").textContent = user?.email || "—"; $("#profile-avatar").textContent = initials(name); const profile = $("#profile-button"), menu = $("#profile-menu"); profile.addEventListener("click", () => { const open = profile.getAttribute("aria-expanded") === "true"; profile.setAttribute("aria-expanded", String(!open)); menu.hidden = open; }); $("#logout-button").addEventListener("click", async () => { await signOut(); location.href = "./"; }); }
+function setConversationLoading(loading) {
+  const node = $("#conversation-session");
+  if (!node) return;
+  node.innerHTML = loading ? `<span class="conversation-spinner" aria-label="Refreshing conversation"></span>` : "";
+  node.classList.toggle("is-loading", loading);
+}
 async function loadConversation(customer, newSession = false) {
-  if (newSession) { sessionId = null; $("#conversation-session").textContent = "New session"; $("#messages").innerHTML = `<div class="empty-state">Start a new conversation with ${customer.name}.</div>`; return; }
+  if (newSession) {
+    sessionId = null;
+    awaitingNewSessionMessage = true;
+    setConversationLoading(false);
+    $("#messages").innerHTML = `<div class="empty-state">Waiting for a new message from ${customer.name}.</div>`;
+    return;
+  }
   const id = sessionId || localStorage.getItem(`known.session.${customer.id}`);
-  if (!id) { $("#conversation-session").textContent = "No conversation yet"; $("#messages").innerHTML = `<div class="empty-state">No conversation loaded.</div>`; return; }
-  $("#conversation-session").textContent = "Loading conversation…";
+  if (!id) { setConversationLoading(false); $("#messages").innerHTML = `<div class="empty-state">No conversation loaded.</div>`; return; }
+  setConversationLoading(true);
   const response = await authenticatedFetch(`/api/sessions/${encodeURIComponent(id)}?customer_id=${encodeURIComponent(customer.id)}`);
-  if (!response) { $("#conversation-session").textContent = "Unable to load conversation"; $("#messages").innerHTML = `<div class="empty-state">The conversation could not be loaded.</div>`; return; }
-  if (!response.ok) { $("#conversation-session").textContent = "Conversation unavailable"; $("#messages").innerHTML = `<div class="empty-state">This conversation is no longer available.</div>`; return; }
-  const data = await response.json(); sessionId = data.session_id; localStorage.setItem(`known.session.${customer.id}`, sessionId); $("#conversation-session").textContent = `Session: ${data.persistence}`; renderConversation(data.messages || []);
+  if (!response) { setConversationLoading(false); $("#messages").innerHTML = `<div class="empty-state">The conversation could not be loaded.</div>`; return; }
+  if (!response.ok) { setConversationLoading(false); $("#messages").innerHTML = `<div class="empty-state">This conversation is no longer available.</div>`; return; }
+  const data = await response.json(); sessionId = data.session_id; awaitingNewSessionMessage = false; localStorage.setItem(`known.session.${customer.id}`, sessionId); setConversationLoading(false); renderConversation(data.messages || []);
 }
 function addMessage(label, text, className) { const el = document.createElement("div"); el.className = `msg ${className}`; el.innerHTML = `<small></small><p></p>`; el.querySelector("small").textContent = label; el.querySelector("p").textContent = text; $("#messages").appendChild(el); $("#messages").scrollTop = $("#messages").scrollHeight; }
 function renderConversation(items) { $("#messages").innerHTML = ""; if (!items.length) { $("#messages").innerHTML = `<div class="empty-state">No messages in this conversation yet.</div>`; return; } items.forEach((item) => addMessage(item.role === "assistant" ? "KNOWN" : selectedCustomer.name.toUpperCase(), item.content, item.role === "assistant" ? "agent-msg" : "customer-msg")); }
-async function sendMessage(message) { const response = await authenticatedFetch("/api/support", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ customer_id: selectedCustomer.id, message, conversation_id: sessionId }) }); if (!response) return; const data = await response.json().catch(() => ({})); if (!response.ok) { const error = new Error(data.detail || `Support request failed (${response.status})`); error.status = response.status; throw error; } sessionId = data.session_id; localStorage.setItem(`known.session.${selectedCustomer.id}`, sessionId); $("#conversation-session").textContent = `Session: ${data.persistence}`; renderConversation(data.conversation || []); }
+async function sendMessage(message) { const response = await authenticatedFetch("/api/support", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ customer_id: selectedCustomer.id, message, conversation_id: sessionId }) }); if (!response) return; const data = await response.json().catch(() => ({})); if (!response.ok) { const error = new Error(data.detail || `Support request failed (${response.status})`); error.status = response.status; throw error; } sessionId = data.session_id; awaitingNewSessionMessage = false; localStorage.setItem(`known.session.${selectedCustomer.id}`, sessionId); setConversationLoading(false); renderConversation(data.conversation || []); }
 function setupConversation() { $("#new-session").addEventListener("click", () => selectedCustomer && loadConversation(selectedCustomer, true)); $("#composer").addEventListener("submit", async (event) => { event.preventDefault(); if (!selectedCustomer) return; const input = $("#message"), button = event.currentTarget.querySelector("button"), message = input.value.trim(); if (!message) return; input.value = ""; button.disabled = true; try { await sendMessage(message); } catch (error) { addMessage("SYSTEM", error.message || "Unable to reach Known.", "agent-msg"); } finally { button.disabled = false; input.focus(); } }); }
 async function openConversation(customer) {
   if (!customer) return;
+  awaitingNewSessionMessage = false;
   $("#conversation-title").textContent = customer.name || "Customer";
   $("#conversation-meta").textContent = [customer.tier, customer.email].filter(Boolean).join(" · ");
   $("#message").disabled = false; $("#composer button").disabled = false;
-  $("#messages").innerHTML = `<div class="empty-state">Loading conversation…</div>`;
+  setConversationLoading(true);
+  $("#messages").innerHTML = "";
   switchView("conversation");
-  try { await loadConversation(customer); } catch (error) { console.error("Known conversation load failed:", error); $("#conversation-session").textContent = "Conversation unavailable"; $("#messages").innerHTML = `<div class="empty-state">The conversation could not be loaded right now.</div>`; }
+  try { await loadConversation(customer); } catch (error) { console.error("Known conversation load failed:", error); setConversationLoading(false); $("#messages").innerHTML = `<div class="empty-state">The conversation could not be loaded right now.</div>`; }
 }
 window.addEventListener("known:gmail-session", async (event) => {
   const { customerId, sessionId: gmailSessionId, senderEmail } = event.detail || {};
@@ -107,14 +122,27 @@ window.addEventListener("known:gmail-session", async (event) => {
     return;
   }
   selectedCustomer = customer;
-  sessionId = gmailSessionId || localStorage.getItem(`known.session.${customer.id}`) || null;
+  sessionId = gmailSessionId || (awaitingNewSessionMessage ? null : localStorage.getItem(`known.session.${customer.id}`)) || null;
   if (sessionId) localStorage.setItem(`known.session.${customer.id}`, sessionId);
   await openConversation(customer);
 });
 window.addEventListener("known:inbox-refresh", async (event) => {
   const activeView = $("#view-conversation");
-  if (!selectedCustomer || !sessionId || !activeView || activeView.hidden) return;
-  const currentSession = event.detail?.messages?.some((message) => {
+  if (!selectedCustomer || !activeView || activeView.hidden) return;
+  const messages = event.detail?.messages || [];
+  if (awaitingNewSessionMessage && !sessionId) {
+    const newest = messages.find((message) => message.customer_id === selectedCustomer.id && (message.session_id || message.external_thread_id));
+    if (newest) {
+      const newestSessionId = newest.session_id || `gmail:${newest.external_thread_id}`;
+      sessionId = newestSessionId;
+      localStorage.setItem(`known.session.${selectedCustomer.id}`, newestSessionId);
+      awaitingNewSessionMessage = false;
+      await loadConversation(selectedCustomer);
+    }
+    return;
+  }
+  if (!sessionId) return;
+  const currentSession = messages.some((message) => {
     const messageSessionId = message.session_id || (message.external_thread_id ? `gmail:${message.external_thread_id}` : null);
     return message.customer_id === selectedCustomer.id && messageSessionId === sessionId;
   });
