@@ -27,14 +27,16 @@ agent = KnownAgent(); durable_sessions = SupabaseSessionStore(); store = Structu
 gmail_poller_task: asyncio.Task | None = None
 
 async def _poll_gmail_once() -> None:
-    if not integrations.configured or not gmail.configured or not durable_sessions.configured: return
+    if not integrations.configured or not gmail.configured or not durable_sessions.configured:
+        logger.warning("Background Gmail poll skipped: dependencies not configured")
+        return
     connections = integrations.connections()
     for connection in connections:
         business_id = connection.get("business_id")
         if not business_id: continue
         try:
             result = await asyncio.to_thread(process_gmail_messages, business_id, connection, agent, store, durable_sessions, integrations, gmail)
-            logger.info("Background Gmail poll: business=%s processed=%s matched=%s created=%s failed=%s", business_id, result.get("processed", 0), result.get("matched", 0), result.get("created", 0), result.get("failed", 0))
+            logger.warning("Background Gmail poll: business=%s processed=%s matched=%s created=%s failed=%s", business_id, result.get("processed", 0), result.get("matched", 0), result.get("created", 0), result.get("failed", 0))
         except Exception:
             logger.exception("Background Gmail poll failed for business %s", business_id)
 
@@ -51,7 +53,7 @@ async def start_gmail_poller() -> None:
     global gmail_poller_task
     if gmail_poller_task is None:
         gmail_poller_task = asyncio.create_task(_gmail_poll_loop(), name="known-gmail-poller")
-        logger.info("Background Gmail poller started: interval_seconds=120")
+        logger.warning("Background Gmail poller started: interval_seconds=120")
 
 @app.on_event("shutdown")
 async def stop_gmail_poller() -> None:
