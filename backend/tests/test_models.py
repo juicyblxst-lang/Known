@@ -21,3 +21,15 @@ def test_support_response_carries_memory_and_action_metadata():
     assert response.memories_used[0]["type"] == "preference"
     assert response.recommended_action == "Check shipment status"
     assert response.degraded_memory is False
+
+
+def test_order_accepts_csv_line_item_objects():
+    order = Order(
+        id="csv_order_123",
+        customer_id="csv_customer_123",
+        status="fulfilled",
+        total=129.99,
+        items=[{"name": "Black Hoodie", "quantity": 1}],
+    )
+
+    assert order.items == [{"name": "Black Hoodie", "quantity": 1}]
