@@ -32,12 +32,12 @@ class IntegrationStore:
         expires=(datetime.now(timezone.utc)+timedelta(seconds=int(token.get("expires_in",3600)))).isoformat() if token.get("expires_in") else None
         self._request("PATCH","integration_connections",params={"id":f"eq.{connection_id}"},json={"access_token":token.get("access_token"),"token_expires_at":expires,"updated_at":datetime.now(timezone.utc).isoformat()})
     def seen(self,business_id:str,external_id:str)->bool:
-        rows=self._request("GET","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","external_message_id":f"eq.{external_id}","processing_status":"eq.processed","select":"id","limit":"1"})
+        rows=self._request("GET","external_messages",params={"business_id":f"eq.{business_id}","provider":"gmail","external_message_id":f"eq.{external_id}","processing_status":"eq.processed","select":"id","limit":"1"})
         return bool(rows)
     def claim_message(self,business_id:str,data:dict[str,Any])->dict[str,Any]|None:
         external_id=data.get("external_message_id")
         if not external_id: return None
-        existing=self._request("GET","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","external_message_id":f"eq.{external_id}","select":"*","limit":"1"})
+        existing=self._request("GET","external_messages",params={"business_id":f"eq.{business_id}","provider":"gmail","external_message_id":f"eq.{external_id}","select":"*","limit":"1"})
         now=datetime.now(timezone.utc).isoformat()
         if existing:
             row=existing[0]
@@ -48,16 +48,16 @@ class IntegrationStore:
         rows=self._request("POST","external_messages",headers={"Prefer":"return=representation"},json=payload)
         return rows[0] if rows else None
     def mark_sent(self,business_id:str,external_id:str,sent_id:str,reply:str,customer_id:str,session_id:str)->None:
-        self._request("PATCH","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","external_message_id":f"eq.{external_id}"},json={"processing_status":"sent","outbound_message_id":sent_id,"outbound_body":reply,"customer_id":customer_id,"session_id":session_id,"last_error":None})
+        self._request("PATCH","external_messages",params={"business_id":f"eq.{business_id}","provider":"gmail","external_message_id":f"eq.{external_id}"},json={"processing_status":"sent","outbound_message_id":sent_id,"outbound_body":reply,"customer_id":customer_id,"session_id":session_id,"last_error":None})
     def mark_processed(self,business_id:str,external_id:str)->None:
-        self._request("PATCH","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","external_message_id":f"eq.{external_id}"},json={"processing_status":"processed","processed_at":datetime.now(timezone.utc).isoformat(),"last_error":None})
+        self._request("PATCH","external_messages",params={"business_id":f"eq.{business_id}","provider":"gmail","external_message_id":f"eq.{external_id}"},json={"processing_status":"processed","processed_at":datetime.now(timezone.utc).isoformat(),"last_error":None})
     def mark_failed(self,business_id:str,external_id:str,error:str)->None:
-        self._request("PATCH","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","external_message_id":f"eq.{external_id}"},json={"processing_status":"failed","last_error":error[:1000]})
-    def list_processed_messages(self,business_id:str,limit:int=50)->list[dict[str,Any]]: return self._request("GET","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","direction":"eq.inbound","select":"external_message_id,external_thread_id,customer_id,session_id,sender_email,subject,body,received_at","order":"received_at.desc","limit":str(limit)})
+        self._request("PATCH","external_messages",params={"business_id":f"eq.{business_id}","provider":"gmail","external_message_id":f"eq.{external_id}"},json={"processing_status":"failed","last_error":error[:1000]})
+    def list_processed_messages(self,business_id:str,limit:int=50)->list[dict[str,Any]]: return self._request("GET","external_messages",params={"business_id":f"eq.{business_id}","provider":"gmail","direction":"eq.inbound","select":"external_message_id,external_thread_id,customer_id,session_id,sender_email,subject,body,received_at","order":"received_at.desc","limit":str(limit)})
     def record_message(self,business_id:str,data:dict[str,Any],customer_id:str|None,session_id:str|None,direction:str,external_id:str|None=None)->None:
         payload={"business_id":business_id,"provider":"gmail","external_message_id":external_id or data["external_message_id"],"external_thread_id":data.get("external_thread_id"),"customer_id":customer_id,"session_id":session_id,"direction":direction,"sender_email":data.get("sender_email"),"recipient_email":data.get("recipient_email"),"subject":data.get("subject"),"body":data.get("body","") ,"received_at":datetime.now(timezone.utc).isoformat(),"processed_at":datetime.now(timezone.utc).isoformat()}
         self._request("POST","external_messages",headers={"Prefer":"resolution=ignore-duplicates"},json=payload)
-    def remember_identity(self,business_id:str,customer_id:str,email:str)->None: self._request("POST","customer_external_identities",headers={"Prefer":"resolution=ignore-duplicates"},json={"business_id":business_id,"customer_id":customer_id,"provider":"gmail","external_id":email.lower()})
+    def remember_identity(self,business_id:str,customer_id:str,email:str)->None: self._request("POST","customer_external_identities",params={"on_conflict":"business_id,provider,external_id"},headers={"Prefer":"resolution=ignore-duplicates"},json={"business_id":business_id,"customer_id":customer_id,"provider":"gmail","external_id":email.lower()})
 
 def _find_customer(store:StructuredStore,business_id:str,email:str)->dict[str,Any]|None:
     if hasattr(store,"customer_by_email"): return store.customer_by_email(email,business_id)
