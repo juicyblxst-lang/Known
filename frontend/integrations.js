@@ -4,6 +4,7 @@ const $ = (s) => document.querySelector(s);
 const api = async (path, options = {}) => authenticatedFetch(path, options);
 let inboxMessages = null;
 let inboxLoading = false;
+let inboxRefreshTimer = null;
 
 async function refreshGmailStatus() {
   const response = await api("/api/integrations/gmail/status").catch(() => null);
@@ -119,7 +120,17 @@ async function syncInbox({background = false} = {}) {
   const messageData = await messages?.json().catch(() => ({ messages: [] }));
   inboxMessages = messageData.messages || [];
   renderInbox(inboxMessages, data);
+  window.dispatchEvent(new CustomEvent("known:inbox-refresh", { detail: { messages: inboxMessages } }));
   await refreshGmailStatus();
+}
+
+function startInboxRefresh() {
+  if (inboxRefreshTimer) return;
+  inboxRefreshTimer = window.setInterval(() => {
+    const activeView = document.querySelector(".view.active-view")?.id;
+    if (activeView !== "view-inbox" && activeView !== "view-conversation") return;
+    syncInbox({background: true}).catch((error) => console.warn("Live Gmail refresh failed:", error));
+  }, 10000);
 }
 
 async function handleViewChange(event) {
@@ -131,5 +142,5 @@ async function handleViewChange(event) {
   }
 }
 
-function init() { const fileInput = $("#csv-file"); const importButton = $("#import-csv"); if (importButton) importButton.disabled = true; fileInput?.addEventListener("change", () => inspectCsvFile(fileInput.files?.[0])); importButton?.addEventListener("click", importCsv); $("#go-to-customers")?.addEventListener("click", () => { location.href = "./index.html?view=customers&imported=1"; }); $("#connect-gmail")?.addEventListener("click", connectGmail); $("#sync-inbox")?.addEventListener("click", () => syncInbox()); window.addEventListener("known:view-change", handleViewChange); window.addEventListener("known:import-complete", async () => { await refreshGmailStatus(); }); refreshGmailStatus(); }
+function init() { const fileInput = $("#csv-file"); const importButton = $("#import-csv"); if (importButton) importButton.disabled = true; fileInput?.addEventListener("change", () => inspectCsvFile(fileInput.files?.[0])); importButton?.addEventListener("click", importCsv); $("#go-to-customers")?.addEventListener("click", () => { location.href = "./index.html?view=customers&imported=1"; }); $("#connect-gmail")?.addEventListener("click", connectGmail); $("#sync-inbox")?.addEventListener("click", () => syncInbox()); window.addEventListener("known:view-change", handleViewChange); window.addEventListener("known:import-complete", async () => { await refreshGmailStatus(); }); startInboxRefresh(); refreshGmailStatus(); }
 init();
