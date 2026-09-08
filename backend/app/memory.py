@@ -75,6 +75,7 @@ class SibylMemory:
         return data if isinstance(data, list) else []
 
     def _durable_search(self, business_id: str, customer_id: str, query: str, limit: int) -> list[dict[str, Any]]:
+        if not self.durable_configured: return []
         rows = self._durable_request("GET", params={"business_id": f"eq.{business_id}", "customer_id": f"eq.{customer_id}", "select": "id,memory_type,content,source,source_id,created_at", "order": "created_at.desc", "limit": "50"})
         terms = {term for term in re.findall(r"[a-z0-9]{3,}", query.lower()) if term not in {"the", "and", "for", "with", "from", "that", "this", "what", "where"}}
         if not terms: return rows[:limit]
@@ -86,6 +87,7 @@ class SibylMemory:
         return (relevant or rows)[:limit]
 
     def _durable_remember(self, business_id: str, customer_id: str, content: str, memory_type: str) -> None:
+        if not self.durable_configured: return
         self._durable_request("POST", params={"on_conflict": "business_id,customer_id,memory_type,content"}, headers={**service_headers(self.supabase_key), "Prefer": "resolution=ignore-duplicates,return=minimal"}, json={"business_id": business_id, "customer_id": customer_id, "memory_type": memory_type, "content": content, "source": "known"})
 
     def _tenant_id(self, business_id: str, customer_id: str) -> str: return f"{business_id}:{customer_id}"
@@ -130,14 +132,12 @@ class SibylMemory:
             durable = self._durable_search(business_id, customer_id, query, max_results)
             merged: list[dict[str, Any]] = []; seen: set[str] = set()
             for hit in [*semantic, *durable]:
-                content = str(hit.get("content", "")).strip()
-                key = hashlib.sha256(content.encode()).hexdigest() if content else repr(hit)
+                content = str(hit.get("content", "")).strip(); key = hashlib.sha256(content.encode()).hexdigest() if content else repr(hit)
                 if key in seen: continue
                 seen.add(key); merged.append(hit)
                 if len(merged) >= max_results: break
             return MemoryResult(merged, True)
-        except Exception as exc:
-            return MemoryResult([], False, self._error_message(exc))
+        except Exception as exc: return MemoryResult([], False, self._error_message(exc))
         finally:
             if client is not None: self._close(client)
 
