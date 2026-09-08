@@ -18,6 +18,7 @@ from .production_agent import KnownAgent
 from .shopify import authorization_url, consume_oauth_state, create_oauth_state, exchange_code, installation, installation_by_shop, save_installation, sync_shop, validate_shop_domain, verify_oauth_hmac, verify_webhook, webhook_claim, webhook_complete, webhook_fail
 from .shopify_webhooks import register_webhooks
 from .store import StructuredStore
+from .supabase_credentials import service_headers, service_key
 from .supabase_sessions import SupabaseSessionStore
 from .workspace import WorkspaceResponse
 
@@ -93,13 +94,14 @@ async def onboarding_status(auth: AuthContext = Depends(require_auth)) -> dict[s
 
 @router.post("/onboarding/complete")
 async def complete_onboarding(auth: AuthContext = Depends(require_auth)) -> dict[str, bool]:
-    url=os.getenv("SUPABASE_URL","").rstrip("/"); key=os.getenv("SUPABASE_SERVICE_ROLE_KEY","")
+    url=os.getenv("SUPABASE_URL","").rstrip("/"); key=service_key()
     if not url or not key: raise HTTPException(status_code=503,detail="Supabase authentication is not configured")
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            current=await client.get(f"{url}/auth/v1/admin/users/{auth.user_id}",headers={"apikey":key,"Authorization":f"Bearer {key}"})
+            headers=service_headers(key)
+            current=await client.get(f"{url}/auth/v1/admin/users/{auth.user_id}",headers=headers)
             current.raise_for_status(); metadata=dict(current.json().get("app_metadata") or {}); metadata["known_onboarding_completed"]=True
-            response=await client.put(f"{url}/auth/v1/admin/users/{auth.user_id}",headers={"apikey":key,"Authorization":f"Bearer {key}"},json={"app_metadata":metadata}); response.raise_for_status()
+            response=await client.put(f"{url}/auth/v1/admin/users/{auth.user_id}",headers=headers,json={"app_metadata":metadata}); response.raise_for_status()
         return {"completed":True}
     except httpx.HTTPError as exc: raise HTTPException(status_code=503,detail="Unable to persist onboarding state") from exc
 
