@@ -72,10 +72,9 @@ class KnownAgent:
             (r"my\s+(?:usual|preferred)\s+size\s+is\s+(.+)$", "customer_preference"),
             (r"(?:please\s+)?(?:ship|send)\s+my\s+orders?\s+(.+)$", "customer_preference"),
             (r"(?:please\s+)?contact\s+me\s+(?:by|via)\s+(.+)$", "customer_preference"),
-            # Natural-language approval/automation constraints are durable even when
-            # the customer does not use an explicit "remember" command. Keep the
-            # customer's wording intact so the LLM can interpret the constraint.
-            (r"(.{1,500}\b(?:never|don(?:'t|t)|do not|avoid)\b.{1,500}\b(?:automatically|auto[- ]?ship|without\s+(?:my\s+)?(?:approval|permission|asking)|confirm(?:ation)?|ask\s+me|check\s+with\s+me)\b.{0,300})$", "customer_constraint"),
+            # Natural-language approval/automation constraints can be durable even when
+            # the customer does not say "remember". Retain the customer's wording.
+            (r"(?=.*\b(?:never|don(?:'t|t)|do not|avoid)\b)(?=.*\b(?:replace\w*|replacement\w*|ship\w*|send\w*)\b)(?=.*\b(?:automatically|auto[- ]?ship|without\s+(?:my\s+)?(?:approval|permission|asking)|confirm(?:ation)?|ask\s+me|check\s+with\s+me)\b)(.{1,1000})$", "customer_constraint"),
             (r"(.{1,500}\b(?:confirm|ask|check)\s+(?:with\s+me\s+)?first\b.{0,500}\b(?:replace|replacement|ship|send)\b.{0,300})$", "customer_constraint"),
         )
         for pattern, memory_type in patterns:
