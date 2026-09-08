@@ -46,9 +46,12 @@ class IntegrationStore:
         existing=self._request("GET","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","external_message_id":f"eq.{external_id}","select":"*","limit":"1"})
         now=datetime.now(timezone.utc).isoformat()
         if existing:
-            row=existing[0]
-            if row.get("processing_status")=="processed": return None
-            updated=self._request("PATCH","external_messages",params={"id":f"eq.{row['id']}"},json={"processing_status":"processing","attempt_count":int(row.get("attempt_count") or 0)+1,"last_attempt_at":now,"last_error":None})
+            row=existing[0]; status=row.get("processing_status"); attempts=int(row.get("attempt_count") or 0)
+            if status=="processed": return None
+            if status in {"failed","processing"} and attempts>=2:
+                logger.warning("Skipping repeatedly failed Gmail message: business=%s external_id=%s attempts=%d status=%s",business_id,external_id,attempts,status)
+                return None
+            updated=self._request("PATCH","external_messages",params={"id":f"eq.{row['id']}"},json={"processing_status":"processing","attempt_count":attempts+1,"last_attempt_at":now,"last_error":None})
             return updated[0] if updated else row
         payload={"business_id":business_id,"provider":"gmail","external_message_id":external_id,"external_thread_id":data.get("external_thread_id"),"customer_id":None,"session_id":None,"direction":"inbound","sender_email":data.get("sender_email"),"recipient_email":data.get("recipient_email"),"subject":data.get("subject"),"body":data.get("body","") ,"received_at":now,"processed_at":None,"processing_status":"processing","attempt_count":1,"last_attempt_at":now}
         rows=self._request("POST","external_messages",headers={"Prefer":"return=representation"},json=payload)
