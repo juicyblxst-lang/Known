@@ -1,6 +1,16 @@
 {
   "rewrites": [
     {
+      "source": "/",
+      "has": [{ "type": "query", "key": "gmail", "value": ".*" }],
+      "destination": "/frontend/index.html"
+    },
+    {
+      "source": "/",
+      "has": [{ "type": "query", "key": "shopify", "value": ".*" }],
+      "destination": "/frontend/index.html"
+    },
+    {
       "source": "/api/:path*",
       "destination": "https://known-sbbp.onrender.com/api/:path*"
     },
