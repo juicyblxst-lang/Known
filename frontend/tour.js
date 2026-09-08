@@ -110,6 +110,7 @@ async function finish() {
     state = { completed: true };
     if (refreshTimer) clearInterval(refreshTimer);
     currentStep = 'done';
+    show();
     spotlight.style.display = 'none';
     document.querySelectorAll('.known-tour-target').forEach((el) => el.classList.remove('known-tour-target'));
     card.classList.remove('anchored');
@@ -140,6 +141,7 @@ async function handleAction() {
   if (currentStep === 'csv-file') return $('#csv-file')?.click();
   if (currentStep === 'csv-import') {
     action.disabled = true;
+    hide();
     return $('#import-csv')?.click();
   }
   if (currentStep === 'done') return hide();
@@ -160,7 +162,19 @@ async function refreshGmailState() {
 function inspectProgress() {
   if (!currentStep || state?.completed) return;
   if (currentStep === 'csv-file' && $('#csv-file')?.files?.length) setStep('csv-import');
-  if (currentStep === 'csv-import' && hasCustomers() && !finishing) finish();
+  if (currentStep === 'csv-import' && hasCustomers() && !finishing) refreshGmailState();
+}
+
+async function handleImportComplete() {
+  if (state.completed) return;
+  try {
+    const response = await fetch('/api/integrations/gmail/status', { headers: { Authorization: `Bearer ${session.accessToken}` } });
+    const data = response.ok ? await response.json() : {};
+    if (data.connected) await finish();
+    else setStep('gmail');
+  } catch {
+    setStep('gmail');
+  }
 }
 
 async function start() {
@@ -174,9 +188,7 @@ async function start() {
     setStep('welcome');
     window.addEventListener('resize', () => position(currentStep));
     window.addEventListener('scroll', () => position(currentStep), true);
-    window.addEventListener('known:import-complete', async () => {
-      if (!state.completed) await finish();
-    });
+    window.addEventListener('known:import-complete', handleImportComplete);
     window.addEventListener('known:gmail-status', async (event) => {
       if (event.detail?.connected && !state.completed) {
         if (hasCustomers()) await finish();
