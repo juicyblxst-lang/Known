@@ -6,6 +6,7 @@ let sessionId = null;
 let customers = [];
 let selectedCustomer = null;
 let selectedOrders = [];
+let gmailConnected = false;
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -16,6 +17,7 @@ function switchView(view) {
   $$(".view").forEach((node) => { node.hidden = node.id !== `view-${view}`; node.classList.toggle("active-view", node.id === `view-${view}`); });
   $$(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   $("#view-title").textContent = title;
+  window.dispatchEvent(new CustomEvent("known:view-change", { detail: { view } }));
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 function bindNavigation() { $$("[data-view]").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view))); }
@@ -25,12 +27,37 @@ function displayName(user) { const metadata = user?.user_metadata || {}; return 
 function initials(name) { return (name || "K").trim().split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "K"; }
 function formatCount(value) { return new Intl.NumberFormat().format(Number(value || 0)); }
 function setConnection(connected, text = "Connected") { const node = $("#connection"); if (!node) return; node.innerHTML = `<i></i>${text}`; node.classList.toggle("offline", !connected); }
+async function refreshGmailStatus() {
+  try {
+    const response = await authenticatedFetch("/api/integrations/gmail/status");
+    if (!response.ok) throw new Error(`Gmail status failed (${response.status})`);
+    const data = await response.json();
+    gmailConnected = Boolean(data.connected);
+    setConnection(gmailConnected, gmailConnected ? `Gmail · ${data.email || "connected"}` : "Gmail not connected");
+    return data;
+  } catch (error) {
+    gmailConnected = false;
+    setConnection(false, "Gmail status unavailable");
+    return null;
+  }
+}
+function showSetupNotice(message) {
+  const status = $(".setup-status");
+  const title = $(".setup-body strong");
+  const copy = $(".setup-body p");
+  if (status) status.textContent = message;
+  if (title && message === "Import complete") title.textContent = "Customer history is ready.";
+  if (copy && message === "Import complete") copy.textContent = "Your customers and orders are now available in Known. Connect your support inbox to start automatic support.";
+  if (title && message === "Gmail connected") title.textContent = "Known is ready to receive support email.";
+  if (copy && message === "Gmail connected") copy.textContent = "Your support Gmail is connected. Customer emails will be processed automatically and surfaced in Inbox.";
+}
 function renderOverview() {
   const name = displayName(session?.user), now = new Date();
   $("#today-label").textContent = escapeDate(now).toUpperCase(); $("#greeting").textContent = `${getGreeting(now.getHours())}, ${name}.`;
-  $("#stat-customers").textContent = formatCount(customers.length); $("#stat-history").textContent = customers.length ? "Available" : "—"; $("#stat-inbox").textContent = "Connected";
+  $("#stat-customers").textContent = formatCount(customers.length); $("#stat-history").textContent = customers.length ? "Available" : "—"; $("#stat-inbox").textContent = gmailConnected ? "Connected" : "Not connected";
   $("#stat-import").textContent = customers.length ? "Complete" : "—"; $("#stat-import-detail").textContent = customers.length ? `${formatCount(customers.length)} customer records` : "No import recorded";
   $("#coverage-customers").textContent = customers.length ? `${formatCount(customers.length)} customer records imported` : "Waiting for a data source"; $("#coverage-customers-count").textContent = customers.length ? formatCount(customers.length) : "—"; $("#coverage-memory").textContent = customers.length ? "Available" : "—";
+  $("#coverage-inbox").textContent = gmailConnected ? "Support Gmail connected" : "Connect your support inbox";
   const activity = $("#recent-activity"); activity.innerHTML = customers.length ? `<div class="activity-event"><span class="activity-dot">✣</span><div><strong>Customer history imported</strong><p>${formatCount(customers.length)} customer records are available in Known.</p><span class="activity-time">Available now</span></div></div>` : `<div class="empty-state">Your workspace is ready. Import customer history to start building memory.</div>`;
 }
 function renderCustomerDirectory(list = customers) {
@@ -61,5 +88,6 @@ async function sendMessage(message) { const response = await authenticatedFetch(
 function setupConversation() { $("#new-session").addEventListener("click", () => selectedCustomer && loadConversation(selectedCustomer, true)); $("#composer").addEventListener("submit", async (event) => { event.preventDefault(); if (!selectedCustomer) return; const input = $("#message"), button = event.currentTarget.querySelector("button"), message = input.value.trim(); if (!message) return; input.value = ""; button.disabled = true; try { await sendMessage(message); } catch (error) { addMessage("SYSTEM", error.message || "Unable to reach Known.", "agent-msg"); } finally { button.disabled = false; input.focus(); } }); }
 async function openConversation() { if (!selectedCustomer) return; $("#conversation-title").textContent = selectedCustomer.name; $("#conversation-meta").textContent = [selectedCustomer.tier, selectedCustomer.email].filter(Boolean).join(" · "); $("#message").disabled = false; $("#composer button").disabled = false; await loadConversation(selectedCustomer); switchView("conversation"); }
 window.addEventListener("known:gmail-session", async (event) => { const { customerId, sessionId: gmailSessionId } = event.detail || {}; const customer = customers.find((item) => item.id === customerId); if (!customer) return; selectedCustomer = customer; sessionId = gmailSessionId || null; await selectCustomer(customer, sessionId); await openConversation(); });
-async function bootstrap() { try { bindNavigation(); setupConversation(); session = await getSession(); if (!session) { location.href = "./login.html"; return; } await onboardingStatus(session); setupProfile(); await loadCustomers(); $("#customer-search").addEventListener("input", () => renderCustomerDirectory(getFilteredCustomers())); $("#detail-name").addEventListener("dblclick", openConversation); const params = new URLSearchParams(location.search); if (params.get("view") === "customers") switchView("customers"); setConnection(true); } catch (error) { console.error("Known dashboard bootstrap failed:", error); if (error?.status === 401) { invalidateSession(); location.href = "./login.html"; return; } setConnection(false, "Degraded"); renderOverview(); $("#customer-search")?.addEventListener("input", () => renderCustomerDirectory(getFilteredCustomers())); $("#detail-name")?.addEventListener("dblclick", openConversation); } }
+window.addEventListener("known:gmail-status", (event) => { const data = event.detail || {}; gmailConnected = Boolean(data.connected); setConnection(gmailConnected, gmailConnected ? `Gmail · ${data.email || "connected"}` : "Gmail not connected"); renderOverview(); });
+async function bootstrap() { try { bindNavigation(); setupConversation(); session = await getSession(); if (!session) { location.href = "./login.html"; return; } const onboarding = await onboardingStatus(session); if (!onboarding.completed) { location.href = "./onboarding.html"; return; } setupProfile(); await loadCustomers(); await refreshGmailStatus(); const params = new URLSearchParams(location.search); if (params.get("imported") === "1") { showSetupNotice("Import complete"); } if (params.get("gmail") === "connected") { showSetupNotice("Gmail connected"); } if (params.has("imported") || params.has("gmail")) history.replaceState({}, document.title, location.pathname); if (params.get("view") === "customers") switchView("customers"); } catch (error) { console.error("Known dashboard bootstrap failed:", error); if (error?.status === 401) { invalidateSession(); location.href = "./login.html"; return; } setConnection(false, "Degraded"); renderOverview(); $("#customer-search")?.addEventListener("input", () => renderCustomerDirectory(getFilteredCustomers())); $("#detail-name")?.addEventListener("dblclick", openConversation); } }
 bootstrap();
