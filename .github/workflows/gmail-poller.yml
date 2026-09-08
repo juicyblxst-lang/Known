@@ -7,16 +7,18 @@ on:
     - cron: '2/5 * * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   poll:
     runs-on: ubuntu-latest
     steps:
       - name: Poll Known Gmail inboxes
         env:
-          CRON_SECRET: ${{ secrets.KNOWN_GMAIL_CRON_SECRET }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          test -n "$CRON_SECRET"
           curl --fail --silent --show-error --max-time 120 \
             -X POST \
-            -H "X-Known-Cron-Secret: $CRON_SECRET" \
+            -H "X-GitHub-Token: $GITHUB_TOKEN" \
             https://known-sbbp.onrender.com/api/internal/gmail/poll-all
