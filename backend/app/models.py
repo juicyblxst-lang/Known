@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -17,7 +17,10 @@ class Order(BaseModel):
     customer_id: str
     status: str
     total: float = 0
-    items: list[str] = Field(default_factory=list)
+    # CSV imports persist line items as {name, quantity}; browser-created requests may
+    # still provide simple strings. Preserve both shapes so imported order context can
+    # reach the agent without losing quantity information.
+    items: list[str | dict[str, Any]] = Field(default_factory=list)
 
 
 class Message(BaseModel):
