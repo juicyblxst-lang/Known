@@ -22,7 +22,10 @@ class IntegrationStore:
     def _request(self,method:str,table:str,**kwargs:Any)->list[dict[str,Any]]:
         if not self.configured: raise RuntimeError("Integration storage is not configured")
         request_headers={**service_headers(self.key), **(kwargs.pop("headers", {}) or {})}
-        r=httpx.request(method,f"{self.url}/rest/v1/{table}",headers=request_headers,timeout=15,**kwargs); r.raise_for_status(); data=r.json() if r.content else []; return data if isinstance(data,list) else []
+        r=httpx.request(method,f"{self.url}/rest/v1/{table}",headers=request_headers,timeout=15,**kwargs)
+        if r.status_code >= 400:
+            logger.error("Supabase integration request failed: method=%s table=%s status=%s body=%s",method,table,r.status_code,r.text[:1000])
+        r.raise_for_status(); data=r.json() if r.content else []; return data if isinstance(data,list) else []
     def connection(self,business_id:str)->dict[str,Any]|None:
         rows=self._request("GET","integration_connections",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","select":"*","limit":"1"}); return rows[0] if rows else None
     def connections(self)->list[dict[str,Any]]: return self._request("GET","integration_connections",params={"provider":"eq.gmail","select":"*","order":"updated_at.desc"})
