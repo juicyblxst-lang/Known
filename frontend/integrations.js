@@ -5,12 +5,15 @@ const api = async (path, options = {}) => authenticatedFetch(path, options);
 
 async function refreshGmailStatus() {
   const response = await api("/api/integrations/gmail/status").catch(() => null);
-  if (!response) return;
+  if (!response) return null;
   const data = await response.json().catch(() => ({}));
   const node = $("#gmail-status"); const button = $("#connect-gmail");
-  if (!node || !button) return;
-  node.textContent = data.connected ? `Connected: ${data.email || "support inbox"}` : (data.configured ? "Not connected yet." : "Google OAuth is not configured on the backend.");
-  button.textContent = data.connected ? "Reconnect Gmail" : "Connect Gmail";
+  if (node && button) {
+    node.textContent = data.connected ? `Connected: ${data.email || "support inbox"}` : (data.configured ? "Not connected yet." : "Google OAuth is not configured on the backend.");
+    button.textContent = data.connected ? "Reconnect Gmail" : "Connect Gmail";
+  }
+  window.dispatchEvent(new CustomEvent("known:gmail-status", { detail: data }));
+  return data;
 }
 
 async function connectGmail() {
@@ -64,7 +67,7 @@ async function importCsv() {
     const data = await response?.json().catch(() => ({}));
     if (!response?.ok) throw new Error(data?.detail || `Import failed (${response?.status || "network"})`);
     updateImportProgress(88, "Building customer memory…", "Initializing durable customer memory from the imported history."); await new Promise((resolve) => setTimeout(resolve, 300));
-    showImportResult(`Imported ${Number(data.customers || 0).toLocaleString()} customers and ${Number(data.orders || 0).toLocaleString()} orders. Customer memory is ready.`, false); csvInspection = null; if (button) button.textContent = "Added"; finishImportModal();
+    showImportResult(`Imported ${Number(data.customers || 0).toLocaleString()} customers and ${Number(data.orders || 0).toLocaleString()} orders. Customer memory is ready.`, false); csvInspection = null; if (button) button.textContent = "Added"; finishImportModal(); window.dispatchEvent(new CustomEvent("known:import-complete", { detail: data }));
   } catch (error) {
     const modal = $("#csv-import-modal"); if (modal) modal.hidden = true;
     const message = error?.message || "Import failed."; showImportResult(message, false);
@@ -72,7 +75,8 @@ async function importCsv() {
   }
 }
 
-function renderInbox(messages, syncResult = null) { const list = $("#inbox-list"); const status = $("#inbox-status"); if (!list || !status) return; if (syncResult) status.textContent = `Sync complete · ${syncResult.processed} processed · ${syncResult.matched} matched · ${syncResult.created || 0} new customers · ${syncResult.failed || 0} failed`; if (!messages.length) { list.innerHTML = ""; return; } list.innerHTML = ""; messages.forEach((message) => { const row = document.createElement("button"); row.type = "button"; row.className = "directory-row"; row.innerHTML = `<span class="directory-avatar">✉</span><span class="directory-info"><strong></strong><small></small></span>`; row.querySelector("strong").textContent = message.subject || "No subject"; row.querySelector("small").textContent = `${message.sender_email || "Unknown sender"} · ${message.body || ""}`; row.addEventListener("click", () => { if (message.customer_id) window.dispatchEvent(new CustomEvent("known:gmail-session", { detail: { customerId: message.customer_id, sessionId: message.session_id } })); }); list.appendChild(row); }); }
-async function syncInbox() { const response = await api("/api/integrations/gmail/sync", { method: "POST" }); const data = await response?.json().catch(() => ({})); if (!response?.ok) { const node = $("#inbox-status"); if (node) node.textContent = data.detail || "Unable to sync Gmail."; return; } const messages = await api("/api/integrations/gmail/messages"); const messageData = await messages?.json().catch(() => ({ messages: [] })); renderInbox(messageData.messages || [], data); refreshGmailStatus(); }
-async function init() { const fileInput = $("#csv-file"); const importButton = $("#import-csv"); if (importButton) importButton.disabled = true; fileInput?.addEventListener("change", () => inspectCsvFile(fileInput.files?.[0])); importButton?.addEventListener("click", importCsv); $("#go-to-customers")?.addEventListener("click", () => { location.href = "./index.html?view=customers"; }); $("#connect-gmail")?.addEventListener("click", connectGmail); $("#sync-inbox")?.addEventListener("click", syncInbox); await refreshGmailStatus(); const params = new URLSearchParams(location.search); if (params.has("gmail")) { history.replaceState({}, "", location.pathname); await refreshGmailStatus(); } const inbox = $("#view-inbox"); if (inbox && !inbox.hidden) await syncInbox(); setInterval(async () => { const current = $("#view-inbox"); if (current && !current.hidden) await syncInbox(); }, 60000); }
+function renderInbox(messages, syncResult = null) { const list = $("#inbox-list"); const status = $("#inbox-status"); if (!list || !status) return; if (syncResult) status.textContent = `Sync complete · ${syncResult.processed} processed · ${syncResult.matched} matched · ${syncResult.created || 0} new customers · ${syncResult.failed || 0} failed`; if (!messages.length) { list.innerHTML = ""; if (!syncResult) status.textContent = "No processed support conversations yet."; return; } list.innerHTML = ""; messages.forEach((message) => { const row = document.createElement("button"); row.type = "button"; row.className = "directory-row"; row.innerHTML = `<span class="directory-avatar">✉</span><span class="directory-info"><strong></strong><small></small></span>`; row.querySelector("strong").textContent = message.subject || "No subject"; row.querySelector("small").textContent = `${message.sender_email || "Unknown sender"} · ${message.body || ""}`; row.addEventListener("click", () => { if (message.customer_id) window.dispatchEvent(new CustomEvent("known:gmail-session", { detail: { customerId: message.customer_id, sessionId: message.session_id } })); }); list.appendChild(row); }); }
+async function syncInbox() { const response = await api("/api/integrations/gmail/sync", { method: "POST" }); const data = await response?.json().catch(() => ({})); if (!response?.ok) { const node = $("#inbox-status"); if (node) node.textContent = data.detail || "Unable to sync Gmail."; await refreshGmailStatus(); return; } const messages = await api("/api/integrations/gmail/messages"); const messageData = await messages?.json().catch(() => ({ messages: [] })); renderInbox(messageData.messages || [], data); await refreshGmailStatus(); }
+async function handleViewChange(event) { const view = event.detail?.view; if (view === "settings") await refreshGmailStatus(); if (view === "inbox") await syncInbox(); }
+function init() { const fileInput = $("#csv-file"); const importButton = $("#import-csv"); if (importButton) importButton.disabled = true; fileInput?.addEventListener("change", () => inspectCsvFile(fileInput.files?.[0])); importButton?.addEventListener("click", importCsv); $("#go-to-customers")?.addEventListener("click", () => { location.href = "./index.html?view=customers&imported=1"; }); $("#connect-gmail")?.addEventListener("click", connectGmail); $("#sync-inbox")?.addEventListener("click", syncInbox); window.addEventListener("known:view-change", handleViewChange); window.addEventListener("known:import-complete", async () => { await refreshGmailStatus(); }); refreshGmailStatus(); }
 init();
