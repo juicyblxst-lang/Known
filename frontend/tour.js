@@ -126,7 +126,13 @@ async function finish() {
 
 async function handleAction() {
   const action = $('#known-tour-action');
-  if (currentStep === 'welcome') return setStep(hasCustomers() ? 'gmail' : 'setup');
+  if (currentStep === 'welcome') {
+    if (hasCustomers()) {
+      document.querySelector('[data-view="settings"]')?.click();
+      return setTimeout(() => setStep('gmail'), 180);
+    }
+    return setStep('setup');
+  }
   if (currentStep === 'setup') {
     document.querySelector('[data-view="settings"]')?.click();
     return setTimeout(() => setStep(hasCustomers() ? 'gmail' : 'csv-file'), 180);
