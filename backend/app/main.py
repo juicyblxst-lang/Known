@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 import httpx
 from fastapi import Depends, FastAPI, HTTPException
@@ -20,11 +21,7 @@ from .store import StructuredStore
 from .supabase_sessions import SupabaseSessionStore
 
 logger = logging.getLogger("known.main")
-app = FastAPI(title="Known", version="0.7.0")
-app.add_middleware(CORSMiddleware, allow_origins=[x.strip() for x in os.getenv("KNOWN_CORS_ORIGINS", "http://localhost:8000").split(",") if x.strip()], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-app.include_router(router); app.include_router(gmail_router); app.include_router(settings_router)
 agent = KnownAgent(); durable_sessions = SupabaseSessionStore(); store = StructuredStore(); gmail = GmailIntegration(); integrations = IntegrationStore()
-gmail_poller_task: asyncio.Task | None = None
 
 async def _poll_gmail_once() -> None:
     if not integrations.configured or not gmail.configured or not durable_sessions.configured:
@@ -42,27 +39,25 @@ async def _poll_gmail_once() -> None:
 
 async def _gmail_poll_loop() -> None:
     while True:
-        try:
-            await _poll_gmail_once()
-        except Exception:
-            logger.exception("Background Gmail poll cycle failed")
+        try: await _poll_gmail_once()
+        except Exception: logger.exception("Background Gmail poll cycle failed")
         await asyncio.sleep(120)
 
-@app.on_event("startup")
-async def start_gmail_poller() -> None:
-    global gmail_poller_task
-    if gmail_poller_task is None:
-        gmail_poller_task = asyncio.create_task(_gmail_poll_loop(), name="known-gmail-poller")
-        logger.warning("Background Gmail poller started: interval_seconds=120")
-
-@app.on_event("shutdown")
-async def stop_gmail_poller() -> None:
-    global gmail_poller_task
-    if gmail_poller_task is not None:
-        gmail_poller_task.cancel()
-        try: await gmail_poller_task
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    poller = asyncio.create_task(_gmail_poll_loop(), name="known-gmail-poller")
+    logger.warning("Background Gmail poller started: interval_seconds=120")
+    try:
+        yield
+    finally:
+        poller.cancel()
+        try: await poller
         except asyncio.CancelledError: pass
-        gmail_poller_task = None
+        logger.warning("Background Gmail poller stopped")
+
+app = FastAPI(title="Known", version="0.7.0", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=[x.strip() for x in os.getenv("KNOWN_CORS_ORIGINS", "http://localhost:8000").split(",") if x.strip()], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.include_router(router); app.include_router(gmail_router); app.include_router(settings_router)
 
 class SupportSessionResponse(SupportResponse):
     session_id: str
