@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hmac
 import logging
 import os
+import time
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -145,13 +147,18 @@ async def gmail_callback(request: Request) -> RedirectResponse:
 async def gmail_sync(auth: AuthContext = Depends(require_auth)) -> dict[str, object]:
     if not gmail.configured: raise HTTPException(status_code=503,detail="Google OAuth is not configured on the backend")
     if not sessions.configured: raise HTTPException(status_code=503,detail="Durable conversation persistence is not configured")
+    started=time.monotonic()
     try:
         connection=integrations.connection(auth.business_id)
         if not connection: raise HTTPException(status_code=409,detail="Connect Gmail before syncing")
-        return {"status":"complete",**process_gmail_messages(auth.business_id,connection,agent,store,sessions,integrations,gmail)}
+        result=process_gmail_messages(auth.business_id,connection,agent,store,sessions,integrations,gmail)
+        logger.info("Gmail sync completed: business=%s processed=%s matched=%s created=%s failed=%s duration_ms=%d",auth.business_id,result.get("processed",0),result.get("matched",0),result.get("created",0),result.get("failed",0),round((time.monotonic()-started)*1000))
+        return {"status":"complete",**result}
     except HTTPException: raise
     except httpx.HTTPStatusError as exc: raise HTTPException(status_code=502,detail="Gmail service unavailable") from exc
     except (httpx.HTTPError,RuntimeError) as exc: raise upstream_error() from exc
+    finally:
+        logger.info("Gmail sync request finished: business=%s duration_ms=%d",auth.business_id,round((time.monotonic()-started)*1000))
 
 @router.get("/integrations/gmail/messages")
 async def gmail_messages(auth: AuthContext = Depends(require_auth)) -> dict[str,object]:
@@ -160,19 +167,23 @@ async def gmail_messages(auth: AuthContext = Depends(require_auth)) -> dict[str,
 
 @router.post("/internal/gmail/poll-all")
 async def gmail_poll_all(x_known_cron_secret: str | None = Header(default=None, alias="X-Known-Cron-Secret")) -> dict[str,object]:
-    expected=os.getenv("KNOWN_GMAIL_CRON_SECRET","")
-    if not expected or not x_known_cron_secret or not __import__("hmac").compare_digest(x_known_cron_secret,expected): raise HTTPException(status_code=401,detail="Invalid cron secret")
+    expected_secrets=[x for x in (os.getenv("KNOWN_GMAIL_CRON_SECRET",""),os.getenv("KNOWN_GMAIL_RENDER_CRON_SECRET","")) if x]
+    if not x_known_cron_secret or not expected_secrets or not any(hmac.compare_digest(x_known_cron_secret,x) for x in expected_secrets): raise HTTPException(status_code=401,detail="Invalid cron secret")
     if not integrations.configured or not gmail.configured or not sessions.configured: return {"status":"degraded","processed":0,"matched":0,"created":0,"failed":0,"reason":"Gmail dependencies are not configured"}
-    totals={"processed":0,"matched":0,"ignored":0,"created":0,"failed":0}; errors=0
+    started=time.monotonic(); totals={"processed":0,"matched":0,"ignored":0,"created":0,"failed":0}; errors=0
     connections=integrations.connections()
+    logger.info("Gmail poll started: businesses=%d",len(connections))
     for connection in connections:
         business_id=connection.get("business_id")
         if not business_id: continue
         try:
             result=process_gmail_messages(business_id,connection,agent,store,sessions,integrations,gmail)
             for key,value in result.items(): totals[key]=totals.get(key,0)+int(value)
+            logger.info("Gmail poll business complete: business=%s processed=%s matched=%s created=%s failed=%s",business_id,result.get("processed",0),result.get("matched",0),result.get("created",0),result.get("failed",0))
         except Exception:
             errors+=1; logger.exception("Gmail poll failed for business %s",business_id)
+    duration_ms=round((time.monotonic()-started)*1000)
+    logger.info("Gmail poll finished: businesses=%d errors=%d processed=%d matched=%d created=%d failed=%d duration_ms=%d",len(connections),errors,totals["processed"],totals["matched"],totals["created"],totals["failed"],duration_ms)
     return {"status":"complete" if errors==0 else "partial","businesses":len(connections),"errors":errors,**totals}
 
 @router.post("/actions", response_model=ActionResponse)
@@ -187,8 +198,7 @@ async def shopify_status(auth: AuthContext = Depends(require_auth)) -> dict:
 
 @router.post("/shopify/connect")
 async def shopify_connect(request: ShopifyConnectRequest, auth: AuthContext = Depends(require_auth)) -> dict[str, str]:
-    try:
-        shop = validate_shop_domain(request.shop_domain); state = create_oauth_state(auth.business_id, auth.user_id, shop); return {"authorization_url": authorization_url(shop, state)}
+    try: shop = validate_shop_domain(request.shop_domain); state = create_oauth_state(auth.business_id, auth.user_id, shop); return {"authorization_url": authorization_url(shop, state)}
     except ValueError as exc: raise HTTPException(status_code=400,detail=str(exc)) from exc
     except RuntimeError as exc: raise HTTPException(status_code=503,detail=str(exc)) from exc
 
