@@ -76,7 +76,16 @@ export async function onboardingStatus(session,{retryAuth=true}={}){
   if(!response.ok){const error=new Error(response.status===401?"Your Known session is no longer valid. Please sign in again.":"Unable to verify onboarding state.");error.status=response.status;throw error;}
   return response.json();
 }
-export async function completeOnboarding(session){const response=await authenticatedFetch("/api/onboarding/complete",{method:"POST"});if(!response.ok)throw new Error("Unable to save onboarding state.");return response.json();}
+export async function completeOnboarding(session){
+  const response=await authenticatedFetch("/api/onboarding/complete",{method:"POST"});
+  if(!response.ok)throw new Error("Unable to save onboarding state.");
+  const result=await response.json();
+  // The completion endpoint updates Supabase app_metadata. Refresh the auth session
+  // before navigating so the dashboard receives a JWT containing the new state.
+  const refreshed=await refreshSession();
+  if(!refreshed)throw new Error("Onboarding was saved, but the session could not be refreshed.");
+  return result;
+}
 export async function signIn(email,password){const response=await supabaseRequest("/token?grant_type=password",{method:"POST",body:JSON.stringify({email,password})});const data=await response.json();if(!response.ok)throw new Error(data.error_description||data.msg||data.message||"Unable to sign in.");saveSession(data);const user=await fetchUser(data.access_token);if(!user){clearSession();throw new Error("Sign-in succeeded but the user session could not be verified.");}sessionStorage.removeItem("known.new-user");return {accessToken:data.access_token,user};}
 export async function signUp(email,password,name){const redirectTo=`${window.location.origin}/login.html`;const response=await supabaseRequest("/signup",{method:"POST",body:JSON.stringify({email,password,data:{name,preferred_name:name},redirect_to:redirectTo})});const data=await response.json();if(!response.ok)throw new Error(data.error_description||data.msg||data.message||"Unable to create account.");sessionStorage.setItem("known.new-user","true");if(data.access_token&&data.refresh_token){saveSession(data);return {session:{accessToken:data.access_token,user:data.user},requiresEmailConfirmation:false};}return {session:null,requiresEmailConfirmation:true};}
 export async function signOut(){const accessToken=localStorage.getItem("known.access_token");clearSession();sessionStorage.removeItem("known.new-user");if(!accessToken)return;try{await supabaseRequest("/logout",{method:"POST",headers:{Authorization:`Bearer ${accessToken}`}});}catch{}}
