@@ -6,7 +6,8 @@ class FakeStore:
         return [{"id": "customer-1", "name": "Maya Rivera", "email": "maya@example.com", "tier": "standard"}]
     def customer_by_email(self, email, business_id): return self._get("customers", {})[0] if email == "maya@example.com" else None
     def orders(self, customer_id, business_id):
-        return [{"id": "10482", "customer_id": customer_id, "status": "shipped", "total": 125.0, "items": ["Sneakers"]}]
+        # Match the exact structured shape produced by csv_import.py.
+        return [{"id": "10482", "customer_id": customer_id, "status": "shipped", "total": 125.0, "items": [{"name": "Sneakers", "quantity": 1}]}]
 
 
 class FakeSessions:
@@ -56,6 +57,8 @@ class FakeAgent:
     def __init__(self): self.memory = FakeMemory()
     def handle(self, request, auth=None):
         assert auth.business_id == "business-a"
+        assert request.orders[0].items[0]["name"] == "Sneakers"
+        assert request.orders[0].items[0]["quantity"] == 1
         memories = self.memory.search("business-a", request.customer.id, request.message).memories
         assert any("leave at door" in m["content"] for m in memories)
         return type("R", (), {"reply": "Hi Maya, I found your order #10482 and your leave-at-door preference. I'll check the latest status for you."})()
