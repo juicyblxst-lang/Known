@@ -17,9 +17,7 @@ from .supabase_sessions import SupabaseSessionStore
 
 app = FastAPI(title="Known", version="0.7.0")
 app.add_middleware(CORSMiddleware, allow_origins=[x.strip() for x in os.getenv("KNOWN_CORS_ORIGINS", "http://localhost:8000").split(",") if x.strip()], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-app.include_router(router)
-app.include_router(gmail_router)
-app.include_router(settings_router)
+app.include_router(router); app.include_router(gmail_router); app.include_router(settings_router)
 agent = KnownAgent(); durable_sessions = SupabaseSessionStore(); store = StructuredStore()
 
 class SupportSessionResponse(SupportResponse):
@@ -32,10 +30,9 @@ def health() -> dict[str, object]: return {"status":"ok","service":"known","vers
 
 @app.get("/ready")
 def ready() -> dict[str, object]:
-    memory = agent.memory.health()
-    provider = os.getenv("LLM_PROVIDER", "openai").lower()
+    memory = agent.memory.health(); provider = os.getenv("LLM_PROVIDER", "openai").lower()
     llm_ok = bool(os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")) if provider == "deepseek" else bool(os.getenv("OPENAI_API_KEY"))
-    checks={"frontend":(Path(__file__).resolve().parents[2]/"frontend").exists(),"supabase":store.configured and durable_sessions.configured,"llm":llm_ok,"memory":bool(memory.get("configured"))}
+    checks={"frontend":(Path(__file__).resolve().parents[2]/"frontend").exists(),"supabase":store.configured and durable_sessions.configured,"llm":llm_ok,"memory":bool(memory.get("configured")) and bool(memory.get("durable_available"))}
     return {"status":"ready" if all(checks.values()) else "degraded","checks":checks,"memory":memory,"sibyl":memory,"llm_provider":provider}
 
 @app.post("/api/support",response_model=SupportSessionResponse)
