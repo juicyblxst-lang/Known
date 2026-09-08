@@ -52,15 +52,10 @@ class KnownAgent:
 
     @staticmethod
     def _extract_durable_memory(message: str) -> tuple[str, str] | None:
-        """Extract explicit, customer-authored facts without asking the model to invent memory.
-
-        Only first-person preferences/constraints or explicit remember instructions are promoted.
-        Ordinary support statements remain events unless the customer clearly states a durable fact.
-        """
+        """Extract explicit customer-authored durable facts without inventing memory."""
         text = " ".join(message.strip().split()).rstrip(".")
         if not text:
             return None
-
         patterns: tuple[tuple[str, str], ...] = (
             (r"(?:please\s+)?remember(?:\s+that)?\s+(.+)$", "customer_preference"),
             (r"i\s+(?:always\s+)?prefer\s+(.+)$", "customer_preference"),
@@ -80,11 +75,10 @@ class KnownAgent:
         )
         for pattern, memory_type in patterns:
             match = re.match(pattern, text, re.IGNORECASE)
-            if not match:
-                continue
-            value = match.group(1).strip()
-            if value and len(value) <= 500:
-                return f"Customer {memory_type.replace('_', ' ')}: {value}.", memory_type
+            if match:
+                value = match.group(1).strip()
+                if value and len(value) <= 500:
+                    return f"Customer {memory_type.replace('_', ' ')}: {value}.", memory_type
         return None
 
     def _generate(self, system: str, context: dict[str, Any]) -> str:
@@ -103,7 +97,8 @@ class KnownAgent:
         if not retrieved.available:
             error = getattr(retrieved, "error", None)
             raise RuntimeError(f"Sibyl Memory is unavailable: {error or 'unknown error'}")
-        memories = retrieved.memories; action = self._action(request.message, memories)
+        memories = retrieved.memories
+        action = self._action(request.message, memories)
         system = """You are Known, a customer-support agent for a small e-commerce business.
 Relevant durable customer memory is required context for Known's support decisions.
 Use relevant memory as decision-making context, not merely as a citation.
@@ -115,15 +110,22 @@ Never claim an operational action has happened unless the backend has actually e
         reply = raw_reply
         try:
             parsed = __import__("json").loads(raw_reply)
-            if isinstance(parsed, dict) and isinstance(parsed.get("reply"), str):
-                reply = parsed["reply"]
+            if isinstance(parsed, dict) and isinstance(parsed.get("reply"), str): reply = parsed["reply"]
         except (ValueError, TypeError):
             pass
+
         memory_written = False
         extracted = self._extract_durable_memory(request.message)
         if extracted:
-            content, memory_type = extracted; memory_written, error = self._remember(business_id, customer_id, content, memory_type)
+            content, memory_type = extracted
+            memory_written, error = self._remember(business_id, customer_id, content, memory_type)
             if not memory_written: raise RuntimeError(f"Customer memory persistence failed: {error}")
+
+        interaction = f"Customer support interaction. Customer message: {request.message.strip()}\nKnown response: {reply.strip()}"
+        interaction_ok, interaction_error = self._remember(business_id, customer_id, interaction[:4000], "support_history")
+        if not interaction_ok: raise RuntimeError(f"Customer support history persistence failed: {interaction_error}")
+        memory_written = memory_written or interaction_ok
+
         event_written, event_error = self._record_event(business_id, customer_id, "support_message", {"recommended_action": action, "memory_used": len(memories), "memory_written": memory_written})
         if not event_written: raise RuntimeError(f"Customer memory event persistence failed: {event_error}")
         return SupportResponse(customer_id=customer_id, reply=reply, memories_used=memories, memory_written=memory_written, recommended_action=action, degraded_memory=False)
