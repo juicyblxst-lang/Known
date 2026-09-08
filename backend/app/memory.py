@@ -130,10 +130,10 @@ class SibylMemory:
             max_results = min(max(limit, 1), 50)
             semantic = [self._normalize_hit(hit) for hit in client.search(query.strip(), limit=max_results)]
             # A genuinely new support message may contain no vocabulary from the
-            # customer's earlier preference. Give Sibyl one broad memory-oriented
-            # retrieval pass so a vague follow-up can still carry prior context.
+            # customer's earlier preference. Give Sibyl one broad retrieval pass
+            # using stable memory metadata language rather than the new message.
             if not semantic:
-                semantic = [self._normalize_hit(hit) for hit in client.search("customer preferences constraints support history", limit=max_results)]
+                semantic = [self._normalize_hit(hit) for hit in client.search("customer constraint preference", limit=max_results)]
             durable = self._durable_search(business_id, customer_id, query, max_results)
             merged: list[dict[str, Any]] = []; seen: set[str] = set()
             for hit in [*semantic, *durable]:
