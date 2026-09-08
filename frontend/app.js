@@ -60,12 +60,7 @@ function renderOverview() {
   $("#coverage-inbox").textContent = gmailConnected ? "Support Gmail connected" : "Connect your support inbox";
   const activity = $("#recent-activity"); activity.innerHTML = customers.length ? `<div class="activity-event"><span class="activity-dot">✣</span><div><strong>Customer history imported</strong><p>${formatCount(customers.length)} customer records are available in Known.</p><span class="activity-time">Available now</span></div></div>` : `<div class="empty-state">Your workspace is ready. Import customer history to start building memory.</div>`;
 }
-function renderCustomerDirectory(list = customers) {
-  const container = $("#customer-directory"); $("#customer-count").textContent = formatCount(customers.length);
-  if (!list.length) { container.innerHTML = `<div class="empty-state">No customers match your search.</div>`; return; }
-  container.innerHTML = "";
-  list.forEach((customer) => { const button = document.createElement("button"); button.type = "button"; button.className = `directory-row${selectedCustomer?.id === customer.id ? " active" : ""}`; button.innerHTML = `<span class="directory-avatar">${initials(customer.name)}</span><span class="directory-info"><strong></strong><small></small></span>`; button.querySelector("strong").textContent = customer.name || "Unnamed customer"; button.querySelector("small").textContent = [customer.tier, customer.email].filter(Boolean).join(" · ") || "Customer record"; button.addEventListener("click", () => selectCustomer(customer)); container.appendChild(button); });
-}
+function renderCustomerDirectory(list = customers) { const container = $("#customer-directory"); $("#customer-count").textContent = formatCount(customers.length); if (!list.length) { container.innerHTML = `<div class="empty-state">No customers match your search.</div>`; return; } container.innerHTML = ""; list.forEach((customer) => { const button = document.createElement("button"); button.type = "button"; button.className = `directory-row${selectedCustomer?.id === customer.id ? " active" : ""}`; button.innerHTML = `<span class="directory-avatar">${initials(customer.name)}</span><span class="directory-info"><strong></strong><small></small></span>`; button.querySelector("strong").textContent = customer.name || "Unnamed customer"; button.querySelector("small").textContent = [customer.tier, customer.email].filter(Boolean).join(" · ") || "Customer record"; button.addEventListener("click", () => selectCustomer(customer)); container.appendChild(button); }); }
 function renderCustomerDetail(data) {
   selectedCustomer = data.customer; selectedOrders = data.orders || [];
   $("#detail-avatar").textContent = initials(data.customer?.name); $("#detail-name").textContent = data.customer?.name || "Customer"; $("#detail-meta").textContent = data.customer ? [data.customer.tier, data.customer.email].filter(Boolean).join(" · ") : "Customer information will appear here."; $("#detail-email").textContent = data.customer?.email || "—"; $("#detail-id").textContent = data.customer?.id || "—";
@@ -115,6 +110,15 @@ window.addEventListener("known:gmail-session", async (event) => {
   sessionId = gmailSessionId || localStorage.getItem(`known.session.${customer.id}`) || null;
   if (sessionId) localStorage.setItem(`known.session.${customer.id}`, sessionId);
   await openConversation(customer);
+});
+window.addEventListener("known:inbox-refresh", async (event) => {
+  const activeView = $("#view-conversation");
+  if (!selectedCustomer || !sessionId || !activeView || activeView.hidden) return;
+  const currentSession = event.detail?.messages?.some((message) => {
+    const messageSessionId = message.session_id || (message.external_thread_id ? `gmail:${message.external_thread_id}` : null);
+    return message.customer_id === selectedCustomer.id && messageSessionId === sessionId;
+  });
+  if (currentSession) await loadConversation(selectedCustomer);
 });
 window.addEventListener("known:gmail-status", (event) => { const data = event.detail || {}; gmailConnected = Boolean(data.connected); setConnection(gmailConnected, gmailConnected ? `Gmail · ${data.email || "connected"}` : "Gmail not connected"); renderOverview(); });
 async function bootstrap() { try { bindNavigation(); setupConversation(); session = await getSession(); if (!session) { location.href = "./login.html"; return; } const onboarding = await onboardingStatus(session); setupProfile(); await loadCustomers(); await refreshGmailStatus(); const params = new URLSearchParams(location.search); if (params.get("imported") === "1") { showSetupNotice("Import complete"); } if (params.get("gmail") === "connected") { showSetupNotice("Gmail connected"); } if (params.has("imported") || params.has("gmail")) history.replaceState({}, document.title, location.pathname); if (params.get("view") === "customers") switchView("customers"); } catch (error) { console.error("Known dashboard bootstrap failed:", error); if (error?.status === 401) { invalidateSession(); location.href = "./login.html"; return; } setConnection(false, "Degraded"); renderOverview(); $("#customer-search")?.addEventListener("input", () => renderCustomerDirectory(getFilteredCustomers())); $("#detail-name")?.addEventListener("dblclick", openConversation); }
