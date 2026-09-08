@@ -166,9 +166,17 @@ async def gmail_messages(auth: AuthContext = Depends(require_auth)) -> dict[str,
     except (httpx.HTTPError,RuntimeError): raise upstream_error()
 
 @router.post("/internal/gmail/poll-all")
-async def gmail_poll_all(x_known_cron_secret: str | None = Header(default=None, alias="X-Known-Cron-Secret")) -> dict[str,object]:
+async def gmail_poll_all(x_known_cron_secret: str | None = Header(default=None, alias="X-Known-Cron-Secret"), x_github_token: str | None = Header(default=None, alias="X-GitHub-Token")) -> dict[str,object]:
     expected_secrets=[x for x in (os.getenv("KNOWN_GMAIL_CRON_SECRET",""),os.getenv("KNOWN_GMAIL_RENDER_CRON_SECRET","")) if x]
-    if not x_known_cron_secret or not expected_secrets or not any(hmac.compare_digest(x_known_cron_secret,x) for x in expected_secrets): raise HTTPException(status_code=401,detail="Invalid cron secret")
+    authorized=bool(x_known_cron_secret and expected_secrets and any(hmac.compare_digest(x_known_cron_secret,x) for x in expected_secrets))
+    if not authorized and x_github_token:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response=await client.get("https://api.github.com/repos/juicyblxst-lang/Known",headers={"Authorization":f"Bearer {x_github_token}","Accept":"application/vnd.github+json","User-Agent":"Known-Gmail-Poller"})
+            authorized=response.status_code==200 and response.json().get("full_name")=="juicyblxst-lang/Known"
+        except (httpx.HTTPError,ValueError):
+            authorized=False
+    if not authorized: raise HTTPException(status_code=401,detail="Invalid cron authentication")
     if not integrations.configured or not gmail.configured or not sessions.configured: return {"status":"degraded","processed":0,"matched":0,"created":0,"failed":0,"reason":"Gmail dependencies are not configured"}
     started=time.monotonic(); totals={"processed":0,"matched":0,"ignored":0,"created":0,"failed":0}; errors=0
     connections=integrations.connections()
