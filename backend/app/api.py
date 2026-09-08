@@ -122,7 +122,18 @@ async def gmail_callback(request: Request) -> RedirectResponse:
         code=request.query_params.get("code"); state=request.query_params.get("state"); error=request.query_params.get("error")
         if error: raise ValueError("Google authorization was not completed")
         if not code or not state: raise ValueError("Missing Gmail OAuth parameters")
-        business_id=gmail.verify_state(state); token=gmail.exchange(code); profile=gmail.profile(token); integrations.save_connection(business_id,token,profile)
+        business_id=gmail.verify_state(state)
+        token=gmail.exchange(code)
+        try:
+            profile=gmail.profile(token["access_token"])
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 401 or not token.get("refresh_token"):
+                raise
+            logger.warning("Fresh Gmail access token was rejected by Gmail; attempting one refresh before failing OAuth")
+            refreshed=gmail.refresh(token["refresh_token"])
+            token={**token, **refreshed}
+            profile=gmail.profile(token["access_token"])
+        integrations.save_connection(business_id,token,profile)
         return RedirectResponse(url=f"{frontend}/?gmail=connected",status_code=303)
     except Exception as exc:
         logger.warning("Gmail OAuth callback failed: %s",exc)
@@ -176,8 +187,8 @@ async def shopify_status(auth: AuthContext = Depends(require_auth)) -> dict:
 async def shopify_connect(request: ShopifyConnectRequest, auth: AuthContext = Depends(require_auth)) -> dict[str, str]:
     try:
         shop = validate_shop_domain(request.shop_domain); state = create_oauth_state(auth.business_id, auth.user_id, shop); return {"authorization_url": authorization_url(shop, state)}
-    except ValueError as exc: raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except RuntimeError as exc: raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc: raise HTTPException(status_code=400,detail=str(exc)) from exc
+    except RuntimeError as exc: raise HTTPException(status_code=503,detail=str(exc)) from exc
 
 @router.post("/shopify/sync")
 async def shopify_sync(auth: AuthContext = Depends(require_auth)) -> dict[str, object]:
