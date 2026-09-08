@@ -39,10 +39,14 @@ function build() {
 
 function hide() {
   if (overlay) overlay.hidden = true;
+  document.body.classList.remove('known-tour-active');
   document.querySelectorAll('.known-tour-target').forEach((el) => el.classList.remove('known-tour-target'));
 }
 
-function show() { if (overlay) overlay.hidden = false; }
+function show() {
+  if (overlay) overlay.hidden = false;
+  document.body.classList.add('known-tour-active');
+}
 
 function targetFor(step) {
   if (step === 'setup') return document.querySelector('[data-view="settings"]');
