@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -10,6 +11,8 @@ from .production_agent import KnownAgent
 from .store import StructuredStore
 from .supabase_credentials import service_headers, service_key
 from .supabase_sessions import SupabaseSessionStore
+
+logger = logging.getLogger("known.integrations")
 
 class IntegrationStore:
     def __init__(self)->None:
@@ -48,12 +51,12 @@ class IntegrationStore:
         rows=self._request("POST","external_messages",headers={"Prefer":"return=representation"},json=payload)
         return rows[0] if rows else None
     def mark_sent(self,business_id:str,external_id:str,sent_id:str,reply:str,customer_id:str,session_id:str)->None:
-        self._request("PATCH","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","external_message_id":f"eq.{external_id}"},json={"processing_status":"sent","outbound_message_id":sent_id,"outbound_body":reply,"customer_id":customer_id,"session_id":session_id,"last_error":None})
+        self._request("PATCH","external_messages",params={"business_id":f"eq.{business_id}","provider":"gmail","external_message_id":f"eq.{external_id}"},json={"processing_status":"sent","outbound_message_id":sent_id,"outbound_body":reply,"customer_id":customer_id,"session_id":session_id,"last_error":None})
     def mark_processed(self,business_id:str,external_id:str)->None:
-        self._request("PATCH","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","external_message_id":f"eq.{external_id}"},json={"processing_status":"processed","processed_at":datetime.now(timezone.utc).isoformat(),"last_error":None})
+        self._request("PATCH","external_messages",params={"business_id":f"eq.{business_id}","provider":"gmail","external_message_id":f"eq.{external_id}"},json={"processing_status":"processed","processed_at":datetime.now(timezone.utc).isoformat(),"last_error":None})
     def mark_failed(self,business_id:str,external_id:str,error:str)->None:
-        self._request("PATCH","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","external_message_id":f"eq.{external_id}"},json={"processing_status":"failed","last_error":error[:1000]})
-    def list_processed_messages(self,business_id:str,limit:int=50)->list[dict[str,Any]]: return self._request("GET","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","direction":"eq.inbound","select":"external_message_id,external_thread_id,customer_id,session_id,sender_email,subject,body,received_at","order":"received_at.desc","limit":str(limit)})
+        self._request("PATCH","external_messages",params={"business_id":f"eq.{business_id}","provider":"gmail","external_message_id":f"eq.{external_id}"},json={"processing_status":"failed","last_error":error[:1000]})
+    def list_processed_messages(self,business_id:str,limit:int=50)->list[dict[str,Any]]: return self._request("GET","external_messages",params={"business_id":f"eq.{business_id}","provider":"gmail","direction":"eq.inbound","select":"external_message_id,external_thread_id,customer_id,session_id,sender_email,subject,body,received_at","order":"received_at.desc","limit":str(limit)})
     def record_message(self,business_id:str,data:dict[str,Any],customer_id:str|None,session_id:str|None,direction:str,external_id:str|None=None)->None:
         payload={"business_id":business_id,"provider":"gmail","external_message_id":external_id or data["external_message_id"],"external_thread_id":data.get("external_thread_id"),"customer_id":customer_id,"session_id":session_id,"direction":direction,"sender_email":data.get("sender_email"),"recipient_email":data.get("recipient_email"),"subject":data.get("subject"),"body":data.get("body","") ,"received_at":datetime.now(timezone.utc).isoformat(),"processed_at":datetime.now(timezone.utc).isoformat()}
         self._request("POST","external_messages",headers={"Prefer":"resolution=ignore-duplicates"},json=payload)
@@ -68,8 +71,10 @@ def process_gmail_messages(business_id:str,connection:dict[str,Any],agent:KnownA
     try: messages=gmail.list_messages(token,max_results=20)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code!=401 or not connection.get("refresh_token"): raise
+        logger.warning("Gmail access token rejected; refreshing before polling business=%s",business_id)
         refreshed=gmail.refresh(connection["refresh_token"]); token=refreshed["access_token"]; integration_store.update_tokens(connection["id"],refreshed); messages=gmail.list_messages(token,max_results=20)
     processed=matched=ignored=created=failed=0
+    logger.info("Gmail message batch loaded: business=%s count=%d",business_id,len(messages))
     for raw in messages:
         parsed=gmail.parse_message(raw); external_id=parsed.get("external_message_id")
         if not external_id: ignored+=1; continue
@@ -109,6 +114,7 @@ def process_gmail_messages(business_id:str,connection:dict[str,Any],agent:KnownA
             gmail.mark_read(token,external_id); processed+=1; matched+=1
         except Exception as exc:
             failed+=1
+            logger.exception("Gmail message processing failed: business=%s external_id=%s subject=%r error=%s",business_id,external_id,parsed.get("subject"),exc)
             if external_id:
                 try: integration_store.mark_failed(business_id,external_id,str(exc))
                 except Exception: pass
