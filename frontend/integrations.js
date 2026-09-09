@@ -274,8 +274,9 @@ async function syncInbox({background = false} = {}) {
 function startInboxRefresh() {
   if (inboxRefreshTimer) return;
   inboxRefreshTimer = window.setInterval(() => {
-    refreshInboxMessages().catch((error) => console.warn("Live inbox refresh failed:", error));
-  }, 1000);
+    if (document.hidden) return;
+    syncInbox({background: true}).catch((error) => console.warn("Live Gmail sync failed:", error));
+  }, 5000);
 }
 
 async function handleViewChange(event) {
@@ -290,7 +291,7 @@ async function handleViewChange(event) {
 
 function init() {
   injectNotificationUi();
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) clearNotificationBadge(); });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) { clearNotificationBadge(); syncInbox({background: true}).catch(() => {}); } });
   const fileInput = $("#csv-file"); const importButton = $("#import-csv"); if (importButton) importButton.disabled = true; fileInput?.addEventListener("change", () => inspectCsvFile(fileInput.files?.[0])); importButton?.addEventListener("click", importCsv); $("#go-to-customers")?.addEventListener("click", () => { location.href = "./index.html?view=customers&imported=1"; }); $("#connect-gmail")?.addEventListener("click", connectGmail); $("#sync-inbox")?.addEventListener("click", () => syncInbox()); window.addEventListener("known:view-change", handleViewChange); window.addEventListener("known:import-complete", async () => { await refreshGmailStatus(); }); startInboxRefresh(); loadInboxMessages().catch((error) => console.warn("Initial inbox load failed:", error)); refreshGmailStatus();
 }
 init();
