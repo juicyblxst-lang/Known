@@ -143,7 +143,7 @@ Never claim an operational action has happened unless the backend has actually e
         if any(word in text for word in ("refund", "return", "cancel")): return "Review order eligibility and offer the applicable return/refund workflow."
         if any(word in text for word in ("replace", "replacement", "damaged")) and any(x in memory_text for x in ("automatically", "auto-ship", "auto ship", "without my approval", "without approval", "confirm first", "ask me first")):
             return "Confirm the customer's approval before arranging a replacement; do not auto-ship it."
-        delivery_issue = any(word in text for word in ("late", "where is", "tracking", "delivery", "not received", "didn't receive", "did not receive")) or bool(re.search(r"\b(?:haven't|have not|didn't|did not)\s+(?:yet\s+)?(?:received|gotten|got)\b", text))
+        delivery_issue = any(word in text for word in ("late", "where is", "tracking", "delivery", "not received", "didn't receive", "did not receive")) or bool(re.search(r"\b(?:haven't|have not|didn't|did not)\s+(?:(?:yet|still)\s+)?(?:i\s+)?(?:received|gotten|got)\b", text))
         if delivery_issue:
             has_recorded_shipping = any(term in memory_text for term in ("shipping instruction", "new address", "different address", "shipping details")) or bool(re.search(r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+\d{1,2}\b|\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b", memory_text))
             if has_recorded_shipping:
