@@ -35,10 +35,4 @@ import { getSession, authenticatedFetch } from "./auth.js";
   };
   importToggle.addEventListener("change", save);
   conversationToggle.addEventListener("change", save);
-
-  // The inbox is a live entry point. app.js owns view switching, while integrations.js
-  // owns Gmail sync; clicking the existing sync control keeps those responsibilities intact.
-  document.querySelector('[data-view="inbox"]')?.addEventListener("click", () => {
-    window.setTimeout(() => document.querySelector("#sync-inbox")?.click(), 0);
-  });
 })();
