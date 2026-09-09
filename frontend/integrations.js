@@ -4,7 +4,91 @@ const $ = (s) => document.querySelector(s);
 const api = async (path, options = {}) => authenticatedFetch(path, options);
 let inboxMessages = null;
 let inboxLoading = false;
+let inboxSyncing = false;
 let inboxRefreshTimer = null;
+let knownInboxIds = new Set();
+let notificationAudioContext = null;
+
+function notificationEnabled() {
+  const toggle = $("#notify-conversations");
+  if (toggle) return toggle.checked;
+  return localStorage.getItem("known.notify.conversations") !== "false";
+}
+
+function messageKey(message) {
+  return message?.external_message_id || `${message?.external_thread_id || "thread"}:${message?.received_at || ""}:${message?.sender_email || ""}:${message?.subject || ""}`;
+}
+
+function playNotificationSound() {
+  try {
+    notificationAudioContext ||= new (window.AudioContext || window.webkitAudioContext)();
+    const context = notificationAudioContext;
+    if (context.state === "suspended") context.resume().catch(() => {});
+    const now = context.currentTime;
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(740, now);
+    oscillator.frequency.exponentialRampToValueAtTime(980, now + 0.09);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.055, now + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
+    oscillator.connect(gain).connect(context.destination);
+    oscillator.start(now);
+    oscillator.stop(now + 0.23);
+  } catch (error) {
+    console.debug("Notification sound unavailable:", error);
+  }
+}
+
+function dismissNotification(toast) {
+  if (!toast) return;
+  toast.classList.remove("is-visible");
+  window.setTimeout(() => toast.remove(), 220);
+}
+
+function showCustomerNotification(message) {
+  if (!notificationEnabled()) return;
+  const stack = $("#notification-stack");
+  if (!stack) return;
+  const existing = stack.querySelector(`[data-notification-id="${CSS.escape(messageKey(message))}"]`);
+  if (existing) return;
+
+  const toast = document.createElement("button");
+  toast.type = "button";
+  toast.className = "known-notification";
+  toast.dataset.notificationId = messageKey(message);
+  toast.innerHTML = `<span class="known-notification-dot" aria-hidden="true"></span><span class="known-notification-copy"><strong>New email</strong><small></small><p></p></span><span class="known-notification-arrow" aria-hidden="true">↗</span>`;
+  toast.querySelector("small").textContent = message.sender_email || "Customer";
+  toast.querySelector("p").textContent = message.subject || "New support message";
+  toast.setAttribute("aria-label", `New email from ${message.sender_email || "customer"}. Open conversation.`);
+  toast.addEventListener("click", () => {
+    dismissNotification(toast);
+    window.dispatchEvent(new CustomEvent("known:gmail-session", { detail: {
+      customerId: message.customer_id || null,
+      sessionId: message.session_id || (message.external_thread_id ? `gmail:${message.external_thread_id}` : null),
+      senderEmail: message.sender_email || null,
+      source: "notification"
+    }}));
+  });
+  stack.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add("is-visible"));
+  playNotificationSound();
+  window.setTimeout(() => dismissNotification(toast), 8000);
+}
+
+function notifyForNewMessages(messages) {
+  const currentIds = new Set((messages || []).map(messageKey));
+  if (!knownInboxIds.size) {
+    knownInboxIds = currentIds;
+    return;
+  }
+  const fresh = (messages || [])
+    .filter((message) => !knownInboxIds.has(messageKey(message)))
+    .sort((a, b) => Date.parse(a.received_at || "") - Date.parse(b.received_at || ""));
+  knownInboxIds = currentIds;
+  fresh.forEach(showCustomerNotification);
+}
 
 async function refreshGmailStatus() {
   const response = await api("/api/integrations/gmail/status").catch(() => null);
@@ -107,28 +191,36 @@ async function loadInboxMessages({showLoading = false} = {}) {
     const messageData = await messages?.json().catch(() => ({ messages: [] }));
     if (messages?.ok) inboxMessages = messageData.messages || [];
     renderInbox(inboxMessages || []);
+    knownInboxIds = new Set((inboxMessages || []).map(messageKey));
     return inboxMessages || [];
   } finally { inboxLoading = false; }
 }
 
 async function syncInbox({background = false} = {}) {
-  if (!background) await loadInboxMessages({showLoading: !inboxMessages});
-  const response = await api("/api/integrations/gmail/sync", { method: "POST" });
-  const data = await response?.json().catch(() => ({}));
-  if (!response?.ok) { const node = $("#inbox-status"); if (node) node.textContent = data.detail || "Unable to sync Gmail."; await refreshGmailStatus(); return; }
-  const messages = await api("/api/integrations/gmail/messages");
-  const messageData = await messages?.json().catch(() => ({ messages: [] }));
-  inboxMessages = messageData.messages || [];
-  renderInbox(inboxMessages, data);
-  window.dispatchEvent(new CustomEvent("known:inbox-refresh", { detail: { messages: inboxMessages } }));
-  await refreshGmailStatus();
+  if (inboxSyncing) return inboxMessages || [];
+  inboxSyncing = true;
+  try {
+    if (!background) await loadInboxMessages({showLoading: !inboxMessages});
+    const response = await api("/api/integrations/gmail/sync", { method: "POST" });
+    const data = await response?.json().catch(() => ({}));
+    if (!response?.ok) { const node = $("#inbox-status"); if (node) node.textContent = data.detail || "Unable to sync Gmail."; await refreshGmailStatus(); return inboxMessages || []; }
+    const messages = await api("/api/integrations/gmail/messages");
+    const messageData = await messages?.json().catch(() => ({ messages: [] }));
+    const nextMessages = messageData.messages || [];
+    notifyForNewMessages(nextMessages);
+    inboxMessages = nextMessages;
+    renderInbox(inboxMessages, data);
+    window.dispatchEvent(new CustomEvent("known:inbox-refresh", { detail: { messages: inboxMessages } }));
+    await refreshGmailStatus();
+    return inboxMessages;
+  } finally { inboxSyncing = false; }
 }
 
 function startInboxRefresh() {
   if (inboxRefreshTimer) return;
   inboxRefreshTimer = window.setInterval(() => {
     const activeView = document.querySelector(".view.active-view")?.id;
-    if (activeView !== "view-inbox" && activeView !== "view-conversation") return;
+    if (activeView !== "view-inbox" && activeView !== "view-conversation" && activeView !== "view-overview") return;
     syncInbox({background: true}).catch((error) => console.warn("Live Gmail refresh failed:", error));
   }, 10000);
 }
@@ -142,5 +234,5 @@ async function handleViewChange(event) {
   }
 }
 
-function init() { const fileInput = $("#csv-file"); const importButton = $("#import-csv"); if (importButton) importButton.disabled = true; fileInput?.addEventListener("change", () => inspectCsvFile(fileInput.files?.[0])); importButton?.addEventListener("click", importCsv); $("#go-to-customers")?.addEventListener("click", () => { location.href = "./index.html?view=customers&imported=1"; }); $("#connect-gmail")?.addEventListener("click", connectGmail); $("#sync-inbox")?.addEventListener("click", () => syncInbox()); window.addEventListener("known:view-change", handleViewChange); window.addEventListener("known:import-complete", async () => { await refreshGmailStatus(); }); startInboxRefresh(); refreshGmailStatus(); }
+function init() { const fileInput = $("#csv-file"); const importButton = $("#import-csv"); if (importButton) importButton.disabled = true; fileInput?.addEventListener("change", () => inspectCsvFile(fileInput.files?.[0])); importButton?.addEventListener("click", importCsv); $("#go-to-customers")?.addEventListener("click", () => { location.href = "./index.html?view=customers&imported=1"; }); $("#connect-gmail")?.addEventListener("click", connectGmail); $("#sync-inbox")?.addEventListener("click", () => syncInbox()); window.addEventListener("known:view-change", handleViewChange); window.addEventListener("known:import-complete", async () => { await refreshGmailStatus(); }); startInboxRefresh(); loadInboxMessages().catch((error) => console.warn("Initial inbox load failed:", error)); refreshGmailStatus(); }
 init();
