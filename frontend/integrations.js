@@ -7,6 +7,7 @@ let inboxLoading = false;
 let inboxSyncing = false;
 let inboxRefreshTimer = null;
 let knownInboxIds = new Set();
+let notificationBaselineReady = false;
 let notificationCount = 0;
 
 function injectNotificationUi() {
@@ -111,8 +112,9 @@ function showCustomerNotification(message) {
 
 function notifyForNewMessages(messages) {
   const currentIds = new Set((messages || []).map(messageKey));
-  if (!knownInboxIds.size) {
+  if (!notificationBaselineReady) {
     knownInboxIds = currentIds;
+    notificationBaselineReady = true;
     return;
   }
   const fresh = (messages || [])
@@ -225,6 +227,7 @@ async function loadInboxMessages({showLoading = false} = {}) {
     if (messages?.ok) inboxMessages = messageData.messages || [];
     renderInbox(inboxMessages || []);
     knownInboxIds = new Set((inboxMessages || []).map(messageKey));
+    notificationBaselineReady = true;
     return inboxMessages || [];
   } finally { inboxLoading = false; }
 }
@@ -266,7 +269,7 @@ function startInboxRefresh() {
     const activeView = document.querySelector(".view.active-view")?.id;
     if (activeView !== "view-inbox" && activeView !== "view-conversation" && activeView !== "view-overview") return;
     refreshInboxMessages().catch((error) => console.warn("Live inbox refresh failed:", error));
-  }, 10000);
+  }, 2000);
 }
 
 async function handleViewChange(event) {
