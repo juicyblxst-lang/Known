@@ -47,9 +47,10 @@ function injectNotificationUi() {
 }
 
 function notificationEnabled() {
+  const saved = localStorage.getItem("known.notify.conversations");
+  if (saved !== null) return saved !== "false";
   const toggle = $("#notify-conversations");
-  if (toggle) return toggle.checked;
-  return localStorage.getItem("known.notify.conversations") !== "false";
+  return toggle ? toggle.checked : true;
 }
 
 function messageKey(message) {
