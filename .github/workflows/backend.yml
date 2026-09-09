@@ -72,14 +72,21 @@ jobs:
           test -f frontend/login.html
           test -f frontend/app.js
           test -f frontend/auth.js
+          test -f frontend/integrations.js
           grep -q '/api/config' frontend/auth.js
           grep -q '/api/support' frontend/app.js
           grep -q 'customer_id' frontend/app.js
+          grep -q '/api/integrations/gmail/messages' frontend/integrations.js
+          if grep -q 'new Audio\|AudioContext\|/api/integrations/gmail/sync' frontend/integrations.js; then
+            echo "Notification refresh must not poll Gmail or create a browser notification sound."
+            exit 1
+          fi
 
       - name: Validate frontend JavaScript syntax
         run: |
           node --check ../frontend/app.js
           node --check ../frontend/auth.js
+          node --check ../frontend/integrations.js
 
   container:
     runs-on: ubuntu-latest
