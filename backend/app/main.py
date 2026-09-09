@@ -27,35 +27,64 @@ GMAIL_POLL_INTERVAL_SECONDS = 5
 
 async def _poll_gmail_once() -> None:
     if not integrations.configured or not gmail.configured or not durable_sessions.configured:
-        logger.warning("Background Gmail poll skipped: dependencies not configured")
+        logger.warning("KNOWN_GMAIL_POLL_SKIP dependencies_not_configured")
         return
     connections = integrations.connections()
-    for connection in connections:
+    if not connections:
+        logger.info("KNOWN_GMAIL_POLL_EMPTY no_gmail_connections")
+        return
+
+    async def poll_connection(connection: dict) -> None:
         business_id = connection.get("business_id")
-        if not business_id: continue
+        if not business_id:
+            return
         try:
-            result = await asyncio.to_thread(process_gmail_messages, business_id, connection, agent, store, durable_sessions, integrations, gmail)
-            logger.info("Background Gmail poll: business=%s processed=%s matched=%s created=%s failed=%s", business_id, result.get("processed", 0), result.get("matched", 0), result.get("created", 0), result.get("failed", 0))
+            result = await asyncio.to_thread(
+                process_gmail_messages,
+                business_id,
+                connection,
+                agent,
+                store,
+                durable_sessions,
+                integrations,
+                gmail,
+            )
+            logger.info(
+                "Background Gmail poll: business=%s processed=%s matched=%s created=%s failed=%s",
+                business_id,
+                result.get("processed", 0),
+                result.get("matched", 0),
+                result.get("created", 0),
+                result.get("failed", 0),
+            )
         except Exception:
             logger.exception("Background Gmail poll failed for business %s", business_id)
 
+    await asyncio.gather(*(poll_connection(connection) for connection in connections))
+
 async def _gmail_poll_loop() -> None:
+    logger.info("KNOWN_GMAIL_POLLER_STARTED interval_seconds=%d", GMAIL_POLL_INTERVAL_SECONDS)
     while True:
-        try: await _poll_gmail_once()
-        except Exception: logger.exception("Background Gmail poll cycle failed")
-        await asyncio.sleep(GMAIL_POLL_INTERVAL_SECONDS)
+        cycle_started = asyncio.get_running_loop().time()
+        try:
+            await _poll_gmail_once()
+        except Exception:
+            logger.exception("Background Gmail poll cycle failed")
+        elapsed = asyncio.get_running_loop().time() - cycle_started
+        logger.info("KNOWN_GMAIL_POLL_CYCLE_COMPLETE elapsed_seconds=%.2f", elapsed)
+        await asyncio.sleep(max(0.5, GMAIL_POLL_INTERVAL_SECONDS - elapsed))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     poller = asyncio.create_task(_gmail_poll_loop(), name="known-gmail-poller")
-    logger.info("Background Gmail poller started: interval_seconds=%d", GMAIL_POLL_INTERVAL_SECONDS)
+    logger.info("KNOWN_GMAIL_LIFESPAN_STARTED interval_seconds=%d", GMAIL_POLL_INTERVAL_SECONDS)
     try:
         yield
     finally:
         poller.cancel()
         try: await poller
         except asyncio.CancelledError: pass
-        logger.info("Background Gmail poller stopped")
+        logger.info("KNOWN_GMAIL_POLLER_STOPPED")
 
 app = FastAPI(title="Known", version="0.7.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=[x.strip() for x in os.getenv("KNOWN_CORS_ORIGINS", "http://localhost:8000").split(",") if x.strip()], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -67,7 +96,7 @@ class SupportSessionResponse(SupportResponse):
     persistence: str
 
 @app.get("/health")
-def health() -> dict[str, object]: return {"status":"ok","service":"known","version":"0.7.0","conversation_persistence":"supabase" if durable_sessions.configured else "unavailable"}
+def health() -> dict[str, object]: return {"status":"ok","service":"known","version":"0.7.0","conversation_persistence":"supabase" if durable_sessions.configured else "unavailable","gmail_poller":"5s"}
 
 @app.get("/ready")
 def ready() -> dict[str, object]:
