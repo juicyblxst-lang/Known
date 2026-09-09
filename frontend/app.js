@@ -9,6 +9,9 @@ let selectedOrders = [];
 let gmailConnected = false;
 let awaitingNewSessionMessage = false;
 let newSessionStartedAt = 0;
+let conversationRefreshTimer = null;
+let conversationRefreshInFlight = false;
+let lastConversationSnapshot = "";
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -93,6 +96,7 @@ async function loadConversation(customer, newSession = false) {
     awaitingNewSessionMessage = false;
     newSessionStartedAt = 0;
     localStorage.setItem(`known.session.${customer.id}`, sessionId);
+    lastConversationSnapshot = "";
     setConversationLoading(false);
     $("#messages").innerHTML = `<div class="empty-state">Start a new conversation with ${customer.name}.</div>`;
     if (typeof window.loadConversationThreads === "function") window.loadConversationThreads(customer);
@@ -104,11 +108,11 @@ async function loadConversation(customer, newSession = false) {
   const response = await authenticatedFetch(`/api/sessions/${encodeURIComponent(id)}?customer_id=${encodeURIComponent(customer.id)}`);
   if (!response) { setConversationLoading(false); $("#messages").innerHTML = `<div class="empty-state">The conversation could not be loaded.</div>`; return; }
   if (!response.ok) { setConversationLoading(false); $("#messages").innerHTML = `<div class="empty-state">This conversation is no longer available.</div>`; return; }
-  const data = await response.json(); sessionId = data.session_id; awaitingNewSessionMessage = false; newSessionStartedAt = 0; localStorage.setItem(`known.session.${customer.id}`, sessionId); setConversationLoading(false); renderConversation(data.messages || []);
+  const data = await response.json(); sessionId = data.session_id; awaitingNewSessionMessage = false; newSessionStartedAt = 0; localStorage.setItem(`known.session.${customer.id}`, sessionId); setConversationLoading(false); renderConversation(data.messages || []); lastConversationSnapshot = (data.messages || []).map((item) => `${item.role}:${item.content}`).join("\n");
 }
 function addMessage(label, text, className) { const el = document.createElement("div"); el.className = `msg ${className}`; el.innerHTML = `<small></small><p></p>`; el.querySelector("small").textContent = label; el.querySelector("p").textContent = text; $("#messages").appendChild(el); $("#messages").scrollTop = $("#messages").scrollHeight; }
 function renderConversation(items) { $("#messages").innerHTML = ""; if (!items.length) { $("#messages").innerHTML = `<div class="empty-state">No messages in this conversation yet.</div>`; return; } items.forEach((item) => addMessage(item.role === "assistant" ? "KNOWN" : selectedCustomer.name.toUpperCase(), item.content, item.role === "assistant" ? "agent-msg" : "customer-msg")); }
-async function sendMessage(message) { const response = await authenticatedFetch("/api/support", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ customer_id: selectedCustomer.id, message, conversation_id: sessionId }) }); if (!response) return; const data = await response.json().catch(() => ({})); if (!response.ok) { const error = new Error(data.detail || `Support request failed (${response.status})`); error.status = response.status; throw error; } sessionId = data.session_id; awaitingNewSessionMessage = false; newSessionStartedAt = 0; localStorage.setItem(`known.session.${selectedCustomer.id}`, sessionId); setConversationLoading(false); renderConversation(data.conversation || []); }
+async function sendMessage(message) { const response = await authenticatedFetch("/api/support", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ customer_id: selectedCustomer.id, message, conversation_id: sessionId }) }); if (!response) return; const data = await response.json().catch(() => ({})); if (!response.ok) { const error = new Error(data.detail || `Support request failed (${response.status})`); error.status = response.status; throw error; } sessionId = data.session_id; awaitingNewSessionMessage = false; newSessionStartedAt = 0; localStorage.setItem(`known.session.${selectedCustomer.id}`, sessionId); setConversationLoading(false); renderConversation(data.conversation || []); lastConversationSnapshot = (data.conversation || []).map((item) => `${item.role}:${item.content}`).join("\n"); }
 function setupConversation() {
   $("#new-session").addEventListener("click", () => selectedCustomer && loadConversation(selectedCustomer, true));
   $("#clear-session")?.addEventListener("click", async () => {
@@ -117,6 +121,7 @@ function setupConversation() {
     if (!response?.ok) return;
     localStorage.removeItem(`known.session.${selectedCustomer.id}`);
     sessionId = null;
+    lastConversationSnapshot = "";
     $("#messages").innerHTML = `<div class="empty-state">Conversation cleared.</div>`;
     if (typeof window.loadConversationThreads === "function") window.loadConversationThreads(selectedCustomer);
   });
@@ -139,6 +144,36 @@ window.loadConversationThreads = async function loadConversationThreads(customer
     list.appendChild(button);
   });
 };
+
+async function refreshOpenConversation() {
+  const activeView = $("#view-conversation");
+  if (!selectedCustomer || !sessionId || !activeView || activeView.hidden || conversationRefreshInFlight) return;
+  conversationRefreshInFlight = true;
+  try {
+    const response = await authenticatedFetch(`/api/sessions/${encodeURIComponent(sessionId)}?customer_id=${encodeURIComponent(selectedCustomer.id)}&_=${Date.now()}`, { cache: "no-store" });
+    if (!response?.ok) return;
+    const data = await response.json().catch(() => null);
+    if (!data || data.session_id !== sessionId) return;
+    const messages = data.messages || [];
+    const snapshot = messages.map((item) => `${item.role}:${item.content}`).join("\n");
+    if (snapshot !== lastConversationSnapshot) {
+      const node = $("#messages");
+      const wasNearBottom = !node || node.scrollHeight - node.scrollTop - node.clientHeight < 120;
+      renderConversation(messages);
+      lastConversationSnapshot = snapshot;
+      if (wasNearBottom && node) node.scrollTop = node.scrollHeight;
+      if (typeof window.loadConversationThreads === "function") window.loadConversationThreads(selectedCustomer);
+    }
+  } catch (error) {
+    console.warn("Live conversation refresh failed:", error);
+  } finally {
+    conversationRefreshInFlight = false;
+  }
+}
+function startConversationRefresh() {
+  if (conversationRefreshTimer) return;
+  conversationRefreshTimer = window.setInterval(refreshOpenConversation, 1000);
+}
 
 async function openConversation(customer) {
   if (!customer) return;
@@ -163,6 +198,8 @@ window.addEventListener("known:gmail-session", async (event) => {
   sessionId = gmailSessionId || (awaitingNewSessionMessage ? null : localStorage.getItem(`known.session.${customer.id}`)) || null;
   if (sessionId) localStorage.setItem(`known.session.${customer.id}`, sessionId);
   await openConversation(customer);
+  lastConversationSnapshot = "";
+  await refreshOpenConversation();
 });
 window.addEventListener("known:inbox-refresh", async (event) => {
   const activeView = $("#view-conversation");
@@ -180,18 +217,14 @@ window.addEventListener("known:inbox-refresh", async (event) => {
       localStorage.setItem(`known.session.${selectedCustomer.id}`, newestSessionId);
       awaitingNewSessionMessage = false;
       newSessionStartedAt = 0;
+      lastConversationSnapshot = "";
       await loadConversation(selectedCustomer);
     }
     return;
   }
-  if (!sessionId) return;
-  const currentSession = messages.some((message) => {
-    const messageSessionId = message.session_id || (message.external_thread_id ? `gmail:${message.external_thread_id}` : null);
-    return message.customer_id === selectedCustomer.id && messageSessionId === sessionId;
-  });
-  if (currentSession) await loadConversation(selectedCustomer);
+  if (sessionId) await refreshOpenConversation();
 });
 window.addEventListener("known:gmail-status", (event) => { const data = event.detail || {}; gmailConnected = Boolean(data.connected); setConnection(gmailConnected, gmailConnected ? `Gmail · ${data.email || "connected"}` : "Gmail not connected"); renderOverview(); });
-async function bootstrap() { try { bindNavigation(); setupConversation(); session = await getSession(); if (!session) { location.href = "./login.html"; return; } const onboarding = await onboardingStatus(session); setupProfile(); await loadCustomers(); await refreshGmailStatus(); const params = new URLSearchParams(location.search); if (params.get("imported") === "1") { showSetupNotice("Import complete"); } if (params.get("gmail") === "connected") { showSetupNotice("Gmail connected"); } if (params.has("imported") || params.has("gmail")) history.replaceState({}, document.title, location.pathname); if (params.get("view") === "customers") switchView("customers"); } catch (error) { console.error("Known dashboard bootstrap failed:", error); if (error?.status === 401) { invalidateSession(); location.href = "./login.html"; return; } setConnection(false, "Degraded"); renderOverview(); $("#customer-search")?.addEventListener("input", () => renderCustomerDirectory(getFilteredCustomers())); $("#detail-name")?.addEventListener("dblclick", openConversation); }
+async function bootstrap() { try { bindNavigation(); setupConversation(); startConversationRefresh(); session = await getSession(); if (!session) { location.href = "./login.html"; return; } const onboarding = await onboardingStatus(session); setupProfile(); await loadCustomers(); await refreshGmailStatus(); const params = new URLSearchParams(location.search); if (params.get("imported") === "1") { showSetupNotice("Import complete"); } if (params.get("gmail") === "connected") { showSetupNotice("Gmail connected"); } if (params.has("imported") || params.has("gmail")) history.replaceState({}, document.title, location.pathname); if (params.get("view") === "customers") switchView("customers"); } catch (error) { console.error("Known dashboard bootstrap failed:", error); if (error?.status === 401) { invalidateSession(); location.href = "./login.html"; return; } setConnection(false, "Degraded"); renderOverview(); $("#customer-search")?.addEventListener("input", () => renderCustomerDirectory(getFilteredCustomers())); $("#detail-name")?.addEventListener("dblclick", openConversation); }
 }
 bootstrap();
