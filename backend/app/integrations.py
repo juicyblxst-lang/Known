@@ -37,9 +37,11 @@ class IntegrationStore:
     def update_tokens(self,connection_id:str,token:dict[str,Any])->None:
         expires=(datetime.now(timezone.utc)+timedelta(seconds=int(token.get("expires_in",3600)))).isoformat() if token.get("expires_in") else None
         self._request("PATCH","integration_connections",params={"id":f"eq.{connection_id}"},json={"access_token":token.get("access_token"),"token_expires_at":expires,"updated_at":datetime.now(timezone.utc).isoformat()})
+    def message_status(self,business_id:str,external_id:str)->dict[str,Any]|None:
+        rows=self._request("GET","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","external_message_id":f"eq.{external_id}","select":"processing_status,attempt_count,customer_id,session_id,outbound_body,outbound_message_id,external_thread_id","limit":"1"})
+        return rows[0] if rows else None
     def seen(self,business_id:str,external_id:str)->bool:
-        rows=self._request("GET","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","external_message_id":f"eq.{external_id}","processing_status":"eq.processed","select":"id","limit":"1"})
-        return bool(rows)
+        return bool(self.message_status(business_id,external_id))
     def claim_message(self,business_id:str,data:dict[str,Any])->dict[str,Any]|None:
         external_id=data.get("external_message_id")
         if not external_id: return None
@@ -72,31 +74,51 @@ def _find_customer(store:StructuredStore,business_id:str,email:str)->dict[str,An
     if hasattr(store,"customer_by_email"): return store.customer_by_email(email,business_id)
     rows=store._get("customers",{"business_id":f"eq.{business_id}","email":f"eq.{email.lower()}","archived_at":"is.null","select":"id,name,email,tier","limit":"1"}); return rows[0] if rows else None
 
+def _restore_sent_message(business_id:str,external_id:str,status_row:dict[str,Any],sessions:SupabaseSessionStore,integration_store:IntegrationStore,gmail:GmailIntegration,token:str)->bool:
+    session_id=status_row.get("session_id"); customer_id=status_row.get("customer_id"); reply=status_row.get("outbound_body") or ""
+    if session_id and customer_id and reply:
+        session=sessions.get(session_id,customer_id,business_id)
+        if session and not any(m.role=="assistant" and m.content==reply for m in session.messages):
+            sessions.append(session_id,Message(role="assistant",content=reply))
+        sent_id=status_row.get("outbound_message_id")
+        if sent_id:
+            integration_store.record_message(business_id,{"external_message_id":sent_id,"external_thread_id":status_row.get("external_thread_id"),"sender_email":"","recipient_email":"","body":reply},customer_id,session_id,"outbound",sent_id)
+    integration_store.mark_processed(business_id,external_id)
+    gmail.mark_read(token,external_id)
+    return True
+
 def process_gmail_messages(business_id:str,connection:dict[str,Any],agent:KnownAgent,store:StructuredStore,sessions:SupabaseSessionStore,integration_store:IntegrationStore,gmail:GmailIntegration)->dict[str,int]:
     token=connection["access_token"]
-    try: messages=gmail.list_messages(token,max_results=20)
+    try: message_ids=gmail.list_message_ids(token,max_results=20)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code!=401 or not connection.get("refresh_token"): raise
         logger.warning("Gmail access token rejected; refreshing before polling business=%s",business_id)
-        refreshed=gmail.refresh(connection["refresh_token"]); token=refreshed["access_token"]; integration_store.update_tokens(connection["id"],refreshed); messages=gmail.list_messages(token,max_results=20)
+        refreshed=gmail.refresh(connection["refresh_token"]); token=refreshed["access_token"]; integration_store.update_tokens(connection["id"],refreshed); message_ids=gmail.list_message_ids(token,max_results=20)
     processed=matched=ignored=created=failed=0
-    logger.info("Gmail message batch loaded: business=%s count=%d",business_id,len(messages))
-    for raw in messages:
-        parsed=gmail.parse_message(raw); external_id=parsed.get("external_message_id")
-        if not external_id: ignored+=1; continue
+    logger.info("Gmail message batch loaded: business=%s count=%d",business_id,len(message_ids))
+    for external_id in message_ids:
+        status_row=integration_store.message_status(business_id,external_id)
+        status=status_row.get("processing_status") if status_row else None
+        attempts=int(status_row.get("attempt_count") or 0) if status_row else 0
+        if status=="processed" or (status in {"failed","processing"} and attempts>=2):
+            ignored+=1
+            continue
+        if status=="sent" and status_row:
+            try:
+                _restore_sent_message(business_id,external_id,status_row,sessions,integration_store,gmail,token)
+                processed+=1; matched+=1
+            except Exception as exc:
+                failed+=1
+                logger.exception("Failed to finalize previously sent Gmail message: business=%s external_id=%s error=%s",business_id,external_id,exc)
+                try: integration_store.mark_failed(business_id,external_id,str(exc))
+                except Exception: pass
+            continue
         try:
+            raw=gmail.get_message(token,external_id)
+            parsed=gmail.parse_message(raw)
             claim=integration_store.claim_message(business_id,parsed)
             if claim is None:
                 ignored+=1; continue
-            if claim.get("processing_status")=="sent":
-                session_id=claim.get("session_id"); customer_id=claim.get("customer_id"); reply=claim.get("outbound_body") or ""
-                if session_id and customer_id and reply:
-                    session=sessions.get(session_id,customer_id,business_id)
-                    if session and not any(m.role=="assistant" and m.content==reply for m in session.messages): sessions.append(session_id,Message(role="assistant",content=reply))
-                    sent_id=claim.get("outbound_message_id")
-                    if sent_id:
-                        integration_store.record_message(business_id,{**parsed,"external_message_id":sent_id,"sender_email":parsed.get("recipient_email"),"recipient_email":parsed.get("sender_email"),"body":reply},customer_id,session_id,"outbound",sent_id)
-                integration_store.mark_processed(business_id,external_id); gmail.mark_read(token,external_id); processed+=1; matched+=1; continue
             sender=parsed.get("sender_email","")
             if not sender:
                 integration_store.mark_failed(business_id,external_id,"Inbound Gmail message has no sender email")
@@ -120,7 +142,7 @@ def process_gmail_messages(business_id:str,connection:dict[str,Any],agent:KnownA
             gmail.mark_read(token,external_id); processed+=1; matched+=1
         except Exception as exc:
             failed+=1
-            logger.exception("Gmail message processing failed: business=%s external_id=%s subject=%r error=%s",business_id,external_id,parsed.get("subject"),exc)
+            logger.exception("Gmail message processing failed: business=%s external_id=%s subject=%r error=%s",business_id,external_id,parsed.get("subject") if 'parsed' in locals() else None,exc)
             if external_id:
                 try: integration_store.mark_failed(business_id,external_id,str(exc))
                 except Exception: pass
