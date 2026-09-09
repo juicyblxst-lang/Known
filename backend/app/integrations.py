@@ -42,6 +42,10 @@ class IntegrationStore:
         return rows[0] if rows else None
     def seen(self,business_id:str,external_id:str)->bool:
         return bool(self.message_status(business_id,external_id))
+    def session_for_thread(self,business_id:str,thread_id:str|None)->str|None:
+        if not thread_id: return None
+        rows=self._request("GET","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","external_thread_id":f"eq.{thread_id}","direction":"eq.inbound","session_id":"not.is.null","select":"session_id,received_at","order":"received_at.desc","limit":"1"})
+        return rows[0].get("session_id") if rows else None
     def claim_message(self,business_id:str,data:dict[str,Any])->dict[str,Any]|None:
         external_id=data.get("external_message_id")
         if not external_id: return None
@@ -74,11 +78,24 @@ def _find_customer(store:StructuredStore,business_id:str,email:str)->dict[str,An
     if hasattr(store,"customer_by_email"): return store.customer_by_email(email,business_id)
     rows=store._get("customers",{"business_id":f"eq.{business_id}","email":f"eq.{email.lower()}","archived_at":"is.null","select":"id,name,email,tier","limit":"1"}); return rows[0] if rows else None
 
-def _gmail_session(sessions:SupabaseSessionStore,thread_id:str|None,customer_id:str,business_id:str)->tuple[str,Any]:
+def _gmail_session(sessions:SupabaseSessionStore,thread_id:str|None,customer_id:str,business_id:str,preferred_session_id:str|None=None)->tuple[str,Any]:
     base=f"gmail:{thread_id}" if thread_id else f"gmail:{customer_id}"
+    candidates=[]
+    if preferred_session_id: candidates.append(preferred_session_id)
+    if thread_id: candidates.append(base)
+    for candidate in candidates:
+        try:
+            existing=sessions.get(candidate,customer_id,business_id)
+            if existing is not None:
+                return candidate,existing
+        except ValueError:
+            logger.warning("Ignoring customer-mismatched conversation session: business=%s session=%s customer=%s",business_id,candidate,customer_id)
+    latest=sessions.latest(customer_id,business_id)
+    if latest is not None:
+        return latest.id,latest
     try:
         return base,sessions.get_or_create(base,customer_id,business_id)
-    except ValueError as exc:
+    except ValueError:
         scoped=f"{base}:{customer_id}"
         logger.warning("Gmail thread belongs to another customer; using customer-scoped session: business=%s thread=%s customer=%s",business_id,thread_id,customer_id)
         return scoped,sessions.get_or_create(scoped,customer_id,business_id)
@@ -138,7 +155,8 @@ def process_gmail_messages(business_id:str,connection:dict[str,Any],agent:KnownA
                 if not hasattr(store,"create_customer"): raise RuntimeError("Customer store cannot create new customers")
                 customer=store.create_customer(business_id,sender,parsed.get("sender_name","") or sender.split("@",1)[0]); created+=1
             integration_store.remember_identity(business_id,customer["id"],customer["email"])
-            session_id,session=_gmail_session(sessions,parsed.get("external_thread_id"),customer["id"],business_id)
+            existing_mapping=integration_store.session_for_thread(business_id,parsed.get("external_thread_id")) if parsed.get("external_thread_id") else None
+            session_id,session=_gmail_session(sessions,parsed.get("external_thread_id"),customer["id"],business_id,existing_mapping)
             body=(parsed.get("body") or "").strip() or "Please review this support email."
             if not any(m.content==body and m.role=="user" for m in session.messages): sessions.append(session_id,Message(role="user",content=body))
             orders=store.orders(customer["id"],business_id); request=SupportContextRequest(customer=Customer(**customer),message=body,conversation=list(session.messages),orders=[Order(**o) for o in orders])

@@ -47,10 +47,10 @@ function injectNotificationUi() {
 }
 
 function notificationEnabled() {
-  const saved = localStorage.getItem("known.notify.conversations");
-  if (saved !== null) return saved !== "false";
   const toggle = $("#notify-conversations");
-  return toggle ? toggle.checked : true;
+  if (toggle) return toggle.checked;
+  const saved = localStorage.getItem("known.notify.conversations");
+  return saved !== "false";
 }
 
 function messageKey(message) {
@@ -201,7 +201,13 @@ function renderInbox(messages, syncResult = null) {
   if (syncResult) status.textContent = `Sync complete · ${syncResult.processed} processed · ${syncResult.matched} matched · ${syncResult.created || 0} new customers · ${syncResult.failed || 0} failed`;
   if (!messages.length) { list.innerHTML = ""; if (!syncResult) status.textContent = "No processed support conversations yet."; return; }
   list.innerHTML = "";
+  const grouped = new Map();
   messages.forEach((message) => {
+    const key = message.session_id || (message.external_thread_id ? `gmail:${message.external_thread_id}` : message.external_message_id);
+    const previous = grouped.get(key);
+    if (!previous || Date.parse(message.received_at || "") > Date.parse(previous.received_at || "")) grouped.set(key, message);
+  });
+  [...grouped.values()].forEach((message) => {
     const row = document.createElement("button"); row.type = "button"; row.className = "directory-row";
     row.innerHTML = `<span class="directory-avatar">✉</span><span class="directory-info"><strong></strong><small></small></span>`;
     row.querySelector("strong").textContent = message.subject || "No subject";
@@ -222,7 +228,7 @@ async function loadInboxMessages({showLoading = false} = {}) {
   if (showLoading) { const status = $("#inbox-status"); if (status) status.textContent = "Loading inbox…"; }
   inboxLoading = true;
   try {
-    const messages = await api("/api/integrations/gmail/messages");
+    const messages = await api(`/api/integrations/gmail/messages?_=${Date.now()}`, { cache: "no-store" });
     const messageData = await messages?.json().catch(() => ({ messages: [] }));
     if (messages?.ok) inboxMessages = messageData.messages || [];
     renderInbox(inboxMessages || []);
@@ -236,7 +242,7 @@ async function refreshInboxMessages() {
   if (inboxLoading) return inboxMessages || [];
   inboxLoading = true;
   try {
-    const response = await api("/api/integrations/gmail/messages");
+    const response = await api(`/api/integrations/gmail/messages?_=${Date.now()}`, { cache: "no-store" });
     const data = await response?.json().catch(() => ({ messages: [] }));
     if (!response?.ok) return inboxMessages || [];
     const nextMessages = data.messages || [];
@@ -266,10 +272,8 @@ async function syncInbox({background = false} = {}) {
 function startInboxRefresh() {
   if (inboxRefreshTimer) return;
   inboxRefreshTimer = window.setInterval(() => {
-    const activeView = document.querySelector(".view.active-view")?.id;
-    if (activeView !== "view-inbox" && activeView !== "view-conversation" && activeView !== "view-overview") return;
     refreshInboxMessages().catch((error) => console.warn("Live inbox refresh failed:", error));
-  }, 2000);
+  }, 1000);
 }
 
 async function handleViewChange(event) {

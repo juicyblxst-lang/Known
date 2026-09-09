@@ -250,6 +250,28 @@ async def shopify_webhook(request: Request) -> dict[str,str]:
     except Exception as exc: webhook_fail(webhook_id,str(exc)); raise HTTPException(status_code=503,detail="Shopify change could not be synchronized") from exc
     return {"status":"accepted","sync":"complete"}
 
+@router.post("/sessions")
+async def create_conversation_session(customer_id: str, auth: AuthContext = Depends(require_auth)) -> dict:
+    if not sessions.configured: raise HTTPException(status_code=503, detail="Durable conversation persistence is not configured")
+    import uuid
+    session_id = f"manual:{customer_id}:{uuid.uuid4().hex}"
+    try: session = sessions.get_or_create(session_id, customer_id, auth.business_id)
+    except (httpx.HTTPError, ValueError): raise upstream_error()
+    return {"session_id": session.id, "customer_id": session.customer_id, "messages": [], "created_at": session.created_at, "updated_at": session.updated_at, "persistence": "supabase"}
+
+@router.get("/sessions")
+async def list_conversation_sessions(customer_id: str, auth: AuthContext = Depends(require_auth)) -> dict:
+    if not sessions.configured: raise HTTPException(status_code=503, detail="Durable conversation persistence is not configured")
+    try: return {"sessions": sessions.list(customer_id, auth.business_id)}
+    except (httpx.HTTPError, ValueError): raise upstream_error()
+
+@router.delete("/sessions/{session_id}")
+async def delete_conversation_session(session_id: str, customer_id: str, auth: AuthContext = Depends(require_auth)) -> dict[str, bool]:
+    if not sessions.configured: raise HTTPException(status_code=503, detail="Durable conversation persistence is not configured")
+    try: sessions.delete(session_id, customer_id, auth.business_id)
+    except (httpx.HTTPError, ValueError): raise upstream_error()
+    return {"deleted": True}
+
 @router.get("/sessions/{session_id}")
 async def get_conversation_session(session_id:str,customer_id:str,auth:AuthContext=Depends(require_auth))->dict:
     if not sessions.configured: raise HTTPException(status_code=503,detail="Durable conversation persistence is not configured")

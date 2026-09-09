@@ -81,11 +81,21 @@ function setupProfile() { const user = session.user, name = displayName(user); $
 function setConversationLoading(loading) { const node = $("#conversation-session"); if (!node) return; node.innerHTML = loading ? `<span class="conversation-spinner" aria-label="Refreshing conversation"></span>` : ""; node.classList.toggle("is-loading", loading); }
 async function loadConversation(customer, newSession = false) {
   if (newSession) {
-    sessionId = null;
-    awaitingNewSessionMessage = true;
-    newSessionStartedAt = Date.now();
+    setConversationLoading(true);
+    const response = await authenticatedFetch(`/api/sessions?customer_id=${encodeURIComponent(customer.id)}`, { method: "POST" });
+    if (!response || !response.ok) {
+      setConversationLoading(false);
+      $("#messages").innerHTML = `<div class="empty-state">Unable to create a new conversation.</div>`;
+      return;
+    }
+    const data = await response.json();
+    sessionId = data.session_id;
+    awaitingNewSessionMessage = false;
+    newSessionStartedAt = 0;
+    localStorage.setItem(`known.session.${customer.id}`, sessionId);
     setConversationLoading(false);
-    $("#messages").innerHTML = `<div class="empty-state">Waiting for a new message from ${customer.name}.</div>`;
+    $("#messages").innerHTML = `<div class="empty-state">Start a new conversation with ${customer.name}.</div>`;
+    if (typeof window.loadConversationThreads === "function") window.loadConversationThreads(customer);
     return;
   }
   const id = sessionId || localStorage.getItem(`known.session.${customer.id}`);
@@ -99,7 +109,37 @@ async function loadConversation(customer, newSession = false) {
 function addMessage(label, text, className) { const el = document.createElement("div"); el.className = `msg ${className}`; el.innerHTML = `<small></small><p></p>`; el.querySelector("small").textContent = label; el.querySelector("p").textContent = text; $("#messages").appendChild(el); $("#messages").scrollTop = $("#messages").scrollHeight; }
 function renderConversation(items) { $("#messages").innerHTML = ""; if (!items.length) { $("#messages").innerHTML = `<div class="empty-state">No messages in this conversation yet.</div>`; return; } items.forEach((item) => addMessage(item.role === "assistant" ? "KNOWN" : selectedCustomer.name.toUpperCase(), item.content, item.role === "assistant" ? "agent-msg" : "customer-msg")); }
 async function sendMessage(message) { const response = await authenticatedFetch("/api/support", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ customer_id: selectedCustomer.id, message, conversation_id: sessionId }) }); if (!response) return; const data = await response.json().catch(() => ({})); if (!response.ok) { const error = new Error(data.detail || `Support request failed (${response.status})`); error.status = response.status; throw error; } sessionId = data.session_id; awaitingNewSessionMessage = false; newSessionStartedAt = 0; localStorage.setItem(`known.session.${selectedCustomer.id}`, sessionId); setConversationLoading(false); renderConversation(data.conversation || []); }
-function setupConversation() { $("#new-session").addEventListener("click", () => selectedCustomer && loadConversation(selectedCustomer, true)); $("#composer").addEventListener("submit", async (event) => { event.preventDefault(); if (!selectedCustomer) return; const input = $("#message"), button = event.currentTarget.querySelector("button"), message = input.value.trim(); if (!message) return; input.value = ""; button.disabled = true; try { await sendMessage(message); } catch (error) { addMessage("SYSTEM", error.message || "Unable to reach Known.", "agent-msg"); } finally { button.disabled = false; input.focus(); } }); }
+function setupConversation() {
+  $("#new-session").addEventListener("click", () => selectedCustomer && loadConversation(selectedCustomer, true));
+  $("#clear-session")?.addEventListener("click", async () => {
+    if (!selectedCustomer || !sessionId) return;
+    const response = await authenticatedFetch(`/api/sessions/${encodeURIComponent(sessionId)}?customer_id=${encodeURIComponent(selectedCustomer.id)}`, { method: "DELETE" });
+    if (!response?.ok) return;
+    localStorage.removeItem(`known.session.${selectedCustomer.id}`);
+    sessionId = null;
+    $("#messages").innerHTML = `<div class="empty-state">Conversation cleared.</div>`;
+    if (typeof window.loadConversationThreads === "function") window.loadConversationThreads(selectedCustomer);
+  });
+  $("#composer").addEventListener("submit", async (event) => { event.preventDefault(); if (!selectedCustomer) return; const input = $("#message"), button = event.currentTarget.querySelector("button"), message = input.value.trim(); if (!message) return; input.value = ""; button.disabled = true; try { await sendMessage(message); } catch (error) { addMessage("SYSTEM", error.message || "Unable to reach Known.", "agent-msg"); } finally { button.disabled = false; input.focus(); } }); }
+window.loadConversationThreads = async function loadConversationThreads(customer) {
+  if (!customer || !$("#conversation-threads")) return;
+  const response = await authenticatedFetch(`/api/sessions?customer_id=${encodeURIComponent(customer.id)}`);
+  const data = await response?.json().catch(() => ({ sessions: [] }));
+  const list = $("#conversation-threads");
+  list.innerHTML = "";
+  (data.sessions || []).forEach((thread) => {
+    const button = document.createElement("button");
+    button.type = "button"; button.className = `conversation-thread${thread.id === sessionId ? " active" : ""}`;
+    button.innerHTML = `<span><strong></strong><small></small></span><em>×</em>`;
+    const updated = thread.updated_at ? new Date(thread.updated_at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
+    button.querySelector("strong").textContent = thread.id.startsWith("gmail:") ? "Gmail conversation" : "Conversation";
+    button.querySelector("small").textContent = updated;
+    button.querySelector("em").addEventListener("click", async (event) => { event.stopPropagation(); const r = await authenticatedFetch(`/api/sessions/${encodeURIComponent(thread.id)}?customer_id=${encodeURIComponent(customer.id)}`, { method: "DELETE" }); if (r?.ok) window.loadConversationThreads(customer); });
+    button.addEventListener("click", async () => { sessionId = thread.id; localStorage.setItem(`known.session.${customer.id}`, sessionId); await loadConversation(customer); window.loadConversationThreads(customer); });
+    list.appendChild(button);
+  });
+};
+
 async function openConversation(customer) {
   if (!customer) return;
   awaitingNewSessionMessage = false;
@@ -110,7 +150,7 @@ async function openConversation(customer) {
   setConversationLoading(true);
   $("#messages").innerHTML = "";
   switchView("conversation");
-  try { await loadConversation(customer); } catch (error) { console.error("Known conversation load failed:", error); setConversationLoading(false); $("#messages").innerHTML = `<div class="empty-state">The conversation could not be loaded right now.</div>`; }
+  try { await loadConversationThreads(customer); await loadConversation(customer); } catch (error) { console.error("Known conversation load failed:", error); setConversationLoading(false); $("#messages").innerHTML = `<div class="empty-state">The conversation could not be loaded right now.</div>`; }
 }
 window.addEventListener("known:gmail-session", async (event) => {
   const { customerId, sessionId: gmailSessionId, senderEmail } = event.detail || {};
