@@ -91,9 +91,15 @@ class GmailIntegration:
         logger.info("Gmail profile verified: email_domain=%s has_history_id=%s", profile["emailAddress"].split("@", 1)[-1], bool(profile.get("historyId")))
         return profile
 
-    def list_messages(self, token: str, max_results: int = 20) -> list[dict[str, Any]]:
+    def list_message_ids(self, token: str, max_results: int = 20) -> list[str]:
         data = self._request(token, "GET", "messages", params={"maxResults": str(max_results), "labelIds": "INBOX", "q": "is:unread -from:me"})
-        return [self._request(token, "GET", f"messages/{item['id']}", params={"format": "full"}) for item in data.get("messages", [])]
+        return [item["id"] for item in data.get("messages", []) if item.get("id")]
+
+    def get_message(self, token: str, message_id: str) -> dict[str, Any]:
+        return self._request(token, "GET", f"messages/{message_id}", params={"format": "full"})
+
+    def list_messages(self, token: str, max_results: int = 20) -> list[dict[str, Any]]:
+        return [self.get_message(token, message_id) for message_id in self.list_message_ids(token, max_results=max_results)]
 
     def mark_read(self, token: str, message_id: str) -> None:
         self._request(token, "POST", f"messages/{message_id}/modify", json={"removeLabelIds": ["UNREAD"]})
