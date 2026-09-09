@@ -123,7 +123,7 @@ class GmailIntegration:
         body = "\n\n".join(x.strip() for x in parts if x.strip())
         sender_name, sender_email = parseaddr(headers.get("from", ""))
         _, recipient_email = parseaddr(headers.get("to", ""))
-        return {"external_message_id": message.get("id"), "external_thread_id": message.get("threadId"), "sender_name": sender_name, "sender_email": sender_email.lower(), "recipient_email": recipient_email.lower(), "subject": headers.get("subject", ""), "body": body, "message_id_header": headers.get("message-id")}
+        return {"external_message_id": message.get("id"), "external_thread_id": message.get("threadId"), "sender_name": sender_name, "sender_email": sender_email.lower(), "recipient_email": recipient_email.lower(), "subject": headers.get("subject", ""), "body": body, "message_id_header": headers.get("message-id"), "auto_submitted": headers.get("auto-submitted", ""), "precedence": headers.get("precedence", ""), "list_id": headers.get("list-id", "")}
 
     def send(self, token: str, to: str, subject: str, body: str, thread_id: str | None = None, in_reply_to: str | None = None) -> dict[str, Any]:
         headers = [f"To: {to}", f"Subject: {subject}", "Content-Type: text/plain; charset=utf-8"]
