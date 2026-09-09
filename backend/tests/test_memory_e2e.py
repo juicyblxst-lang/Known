@@ -4,6 +4,7 @@ import json
 from app.memory import SibylMemory
 from app.models import SupportRequest
 from app.production_agent import KnownAgent
+from app.workspace import WorkspaceOrder
 
 
 class FakeResponse:
@@ -20,11 +21,12 @@ class FakeResponses:
         input_text = input.lower()
         personalized = "maya prefers expedited handling" in input_text
         approval_memory = any(term in input_text for term in ("auto-ship", "auto ship", "automatically", "without my approval", "confirm first", "ask me first"))
+        shipping_memory = "shipping instruction" in input_text and any(term in input_text for term in ("17th", "canada", "new address", "office"))
         decision = {
-            "reply": "Replacement requires customer approval" if approval_memory else ("Personalized response" if personalized else "Generic response"),
-            "recommendation": "Confirm before replacement" if approval_memory else ("Prioritize expedited handling" if personalized else None),
-            "action": "confirm_before_replacement" if approval_memory else "none",
-            "memory_influence": "The customer's stored constraint changes the replacement decision." if approval_memory else ("The customer's stored preference changes the delivery recommendation." if personalized else "No relevant memory found"),
+            "reply": "Replacement requires customer approval" if approval_memory else ("The requested shipping details are recorded." if shipping_memory else ("Personalized response" if personalized else "Generic response")),
+            "recommendation": "Confirm before replacement" if approval_memory else ("Use the recorded shipping details" if shipping_memory else ("Prioritize expedited handling" if personalized else None)),
+            "action": "confirm_before_replacement" if approval_memory else ("use_recorded_shipping_details" if shipping_memory else "none"),
+            "memory_influence": "The customer's stored constraint changes the replacement decision." if approval_memory else ("The customer's newly supplied shipping details change the delivery context." if shipping_memory else ("The customer's stored preference changes the delivery recommendation." if personalized else "No relevant memory found")),
             "should_remember": None,
             "memory_type": "none",
         }
@@ -86,6 +88,26 @@ def test_natural_language_approval_constraint_is_persisted_and_changes_action(tm
     assert second.reply == "Replacement requires customer approval"
 
 
+def test_shipping_details_learned_mid_conversation_are_persisted(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("SIBYL_MEMORY_DB", str(tmp_path / "memory.db"))
+    memory = SibylMemory()
+    client = FakeClient()
+    agent = KnownAgent(memory=memory, client=client)
+
+    first = agent.handle(
+        request("Ship the replacement to me on September 17. I will be in Canada, so use my new office address: 14 King Street, Toronto."),
+        auth=auth(),
+    )
+    assert first.memory_written is True
+
+    second = agent.handle(request("Why haven't I received my order?"), auth=auth())
+    assert second.memories_used
+    assert "september 17" in client.responses.inputs[-1].lower()
+    assert "canada" in client.responses.inputs[-1].lower()
+    assert "new office address" in client.responses.inputs[-1].lower()
+    assert second.recommended_action.startswith("Use the customer's previously recorded shipping timing")
+
+
 def test_approval_constraint_variants_are_adaptive():
     variants = [
         "Please don't send replacements without asking me first.",
@@ -99,3 +121,13 @@ def test_approval_constraint_variants_are_adaptive():
         content, memory_type = extracted
         assert memory_type == "customer_constraint"
         assert content
+
+
+def test_workspace_order_items_are_readable():
+    order = WorkspaceOrder(
+        id="order-1",
+        status="fulfilled",
+        total=49.0,
+        items=[{"name": "Milk Frother", "quantity": 2}, {"name": "Coffee Beans", "quantity": 1}],
+    )
+    assert order.items == ["Milk Frother × 2", "Coffee Beans"]
