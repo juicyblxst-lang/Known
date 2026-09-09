@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -12,6 +13,8 @@ import httpx
 from sibyl_memory_client import MemoryClient
 from sibyl_memory_client.exceptions import CapExceededError, NotFoundError, SibylMemoryError, TierGateError, TierVerificationError, ValidationError
 from .supabase_credentials import service_headers, service_key
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -134,17 +137,27 @@ class SibylMemory:
             # using stable memory metadata language rather than the new message.
             if not semantic:
                 semantic = [self._normalize_hit(hit) for hit in client.search("customer constraint preference", limit=max_results)]
-            durable = self._durable_search(business_id, customer_id, query, max_results)
-            merged: list[dict[str, Any]] = []; seen: set[str] = set()
-            for hit in [*semantic, *durable]:
-                content = str(hit.get("content", "")).strip(); key = hashlib.sha256(content.encode()).hexdigest() if content else repr(hit)
-                if key in seen: continue
-                seen.add(key); merged.append(hit)
-                if len(merged) >= max_results: break
-            return MemoryResult(merged, True)
-        except Exception as exc: return MemoryResult([], False, self._error_message(exc))
+        except Exception as exc:
+            return MemoryResult([], False, self._error_message(exc))
         finally:
             if client is not None: self._close(client)
+
+        # Supabase is a durability/inspection layer. A transient failure there
+        # must not make the load-bearing Sibyl memory unavailable or prevent Known
+        # from responding to a customer. Sibyl retrieval above remains mandatory.
+        try:
+            durable = self._durable_search(business_id, customer_id, query, max_results)
+        except Exception as exc:
+            logger.warning("Durable customer memory search unavailable; continuing with Sibyl: business=%s customer=%s error=%s", business_id, customer_id, self._error_message(exc))
+            durable = []
+
+        merged: list[dict[str, Any]] = []; seen: set[str] = set()
+        for hit in [*semantic, *durable]:
+            content = str(hit.get("content", "")).strip(); key = hashlib.sha256(content.encode()).hexdigest() if content else repr(hit)
+            if key in seen: continue
+            seen.add(key); merged.append(hit)
+            if len(merged) >= max_results: break
+        return MemoryResult(merged, True)
 
     def remember(self, business_id: str, customer_id: str, content: str, memory_type: str = "customer_history") -> tuple[bool, str]:
         if not content.strip(): return False, "Sibyl memory content is empty"
@@ -153,22 +166,34 @@ class SibylMemory:
             client = self._client(business_id, customer_id)
             digest = hashlib.sha256(content.encode()).hexdigest()[:24]
             client.set_entity(memory_type, f"memory-{digest}", {"content": content, "customer_id": customer_id, "type": memory_type})
-            self._durable_remember(business_id, customer_id, content, memory_type)
-            return True, ""
-        except Exception as exc: return False, self._error_message(exc)
+        except Exception as exc:
+            return False, self._error_message(exc)
         finally:
             if client is not None: self._close(client)
+
+        # Sibyl is the load-bearing memory store. Keep customer support alive if
+        # the secondary Supabase durability write is temporarily unhealthy.
+        try:
+            self._durable_remember(business_id, customer_id, content, memory_type)
+        except Exception as exc:
+            logger.warning("Durable customer memory write unavailable; Sibyl write succeeded: business=%s customer=%s type=%s error=%s", business_id, customer_id, memory_type, self._error_message(exc))
+        return True, ""
 
     def record_event(self, business_id: str, customer_id: str, kind: str, body: dict[str, Any]) -> tuple[bool, str]:
         client = None
         try:
             client = self._client(business_id, customer_id)
             event_id = client.write_event(acted={"kind": kind, "body": body}, extra={"customer_id": customer_id})
-            self._durable_remember(business_id, customer_id, f"Known support event ({kind}): {body}", "support_event")
-            return True, str(event_id)
-        except Exception as exc: return False, self._error_message(exc)
+        except Exception as exc:
+            return False, self._error_message(exc)
         finally:
             if client is not None: self._close(client)
+
+        try:
+            self._durable_remember(business_id, customer_id, f"Known support event ({kind}): {body}", "support_event")
+        except Exception as exc:
+            logger.warning("Durable support event write unavailable; Sibyl event succeeded: business=%s customer=%s kind=%s error=%s", business_id, customer_id, kind, self._error_message(exc))
+        return True, str(event_id)
 
     def import_customer_history(self, business_id: str, customers: list[dict[str, Any]], orders: list[dict[str, Any]]) -> dict[str, int]:
         orders_by_customer: dict[str, list[dict[str, Any]]] = {}
