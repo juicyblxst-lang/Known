@@ -1,0 +1,105 @@
+name: Apply conversation thread fix
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply thread and notification hardening
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          # Backend: add durable session listing/deletion endpoints.
+          api = Path('backend/app/api.py')
+          text = api.read_text()
+          marker = '@router.get("/sessions/{session_id}")'
+          insert = '''@router.post("/sessions")\nasync def create_conversation_session(customer_id: str, auth: AuthContext = Depends(require_auth)) -> dict:\n    if not sessions.configured: raise HTTPException(status_code=503, detail="Durable conversation persistence is not configured")\n    import uuid\n    session_id = f"manual:{customer_id}:{uuid.uuid4().hex}"\n    try: session = sessions.get_or_create(session_id, customer_id, auth.business_id)\n    except (httpx.HTTPError, ValueError): raise upstream_error()\n    return {"session_id": session.id, "customer_id": session.customer_id, "messages": [], "created_at": session.created_at, "updated_at": session.updated_at, "persistence": "supabase"}\n\n@router.get("/sessions")\nasync def list_conversation_sessions(customer_id: str, auth: AuthContext = Depends(require_auth)) -> dict:\n    if not sessions.configured: raise HTTPException(status_code=503, detail="Durable conversation persistence is not configured")\n    try: return {"sessions": sessions.list(customer_id, auth.business_id)}\n    except (httpx.HTTPError, ValueError): raise upstream_error()\n\n@router.delete("/sessions/{session_id}")\nasync def delete_conversation_session(session_id: str, customer_id: str, auth: AuthContext = Depends(require_auth)) -> dict[str, bool]:\n    if not sessions.configured: raise HTTPException(status_code=503, detail="Durable conversation persistence is not configured")\n    try: sessions.delete(session_id, customer_id, auth.business_id)\n    except (httpx.HTTPError, ValueError): raise upstream_error()\n    return {"deleted": True}\n\n'''
+          if marker not in text or '@router.post("/sessions")' not in text:
+              text = text.replace(marker, insert + marker, 1)
+          api.write_text(text)
+
+          # Backend: keep Gmail replies in the existing customer thread when a new
+          # Gmail thread has no prior mapping; existing external-thread mappings win.
+          integ = Path('backend/app/integrations.py')
+          text = integ.read_text()
+          old = '''def _gmail_session(sessions:SupabaseSessionStore,thread_id:str|None,customer_id:str,business_id:str)->tuple[str,Any]:\n    base=f"gmail:{thread_id}" if thread_id else f"gmail:{customer_id}"\n    try:\n        return base,sessions.get_or_create(base,customer_id,business_id)\n    except ValueError as exc:\n        scoped=f"{base}:{customer_id}"\n        logger.warning("Gmail thread belongs to another customer; using customer-scoped session: business=%s thread=%s customer=%s",business_id,thread_id,customer_id)\n        return scoped,sessions.get_or_create(scoped,customer_id,business_id)\n'''
+          new = '''def _gmail_session(sessions:SupabaseSessionStore,thread_id:str|None,customer_id:str,business_id:str,preferred_session_id:str|None=None)->tuple[str,Any]:\n    base=f"gmail:{thread_id}" if thread_id else f"gmail:{customer_id}"\n    candidates=[]\n    if preferred_session_id: candidates.append(preferred_session_id)\n    if thread_id: candidates.append(base)\n    for candidate in candidates:\n        try:\n            existing=sessions.get(candidate,customer_id,business_id)\n            if existing is not None:\n                return candidate,existing\n        except ValueError:\n            logger.warning("Ignoring customer-mismatched conversation session: business=%s session=%s customer=%s",business_id,candidate,customer_id)\n    latest=sessions.latest(customer_id,business_id)\n    if latest is not None:\n        return latest.id,latest\n    try:\n        return base,sessions.get_or_create(base,customer_id,business_id)\n    except ValueError:\n        scoped=f"{base}:{customer_id}"\n        logger.warning("Gmail thread belongs to another customer; using customer-scoped session: business=%s thread=%s customer=%s",business_id,thread_id,customer_id)\n        return scoped,sessions.get_or_create(scoped,customer_id,business_id)\n'''
+          if old not in text: raise SystemExit('gmail session target not found')
+          text=text.replace(old,new,1)
+          old='''            session_id,session=_gmail_session(sessions,parsed.get("external_thread_id"),customer["id"],business_id)'''
+          new='''            existing_mapping=integration_store.session_for_thread(business_id,parsed.get("external_thread_id")) if parsed.get("external_thread_id") else None\n            session_id,session=_gmail_session(sessions,parsed.get("external_thread_id"),customer["id"],business_id,existing_mapping)'''
+          if old not in text: raise SystemExit('gmail process target not found')
+          text=text.replace(old,new,1)
+          # Add lookup beside message_status.
+          marker='''    def seen(self,business_id:str,external_id:str)->bool:\n        return bool(self.message_status(business_id,external_id))\n'''
+          insert='''    def seen(self,business_id:str,external_id:str)->bool:\n        return bool(self.message_status(business_id,external_id))\n    def session_for_thread(self,business_id:str,thread_id:str|None)->str|None:\n        if not thread_id: return None\n        rows=self._request("GET","external_messages",params={"business_id":f"eq.{business_id}","provider":"eq.gmail","external_thread_id":f"eq.{thread_id}","direction":"eq.inbound","session_id":"not.is.null","select":"session_id,received_at","order":"received_at.desc","limit":"1"})\n        return rows[0].get("session_id") if rows else None\n'''
+          if marker not in text: raise SystemExit('message status marker not found')
+          text=text.replace(marker,insert,1)
+          integ.write_text(text)
+
+          # Frontend: group the inbox by durable conversation session, poll without
+          # cache, prefer the live notification toggle, and refresh continuously.
+          integ=Path('frontend/integrations.js')
+          text=integ.read_text()
+          old='''function notificationEnabled() {\n  const saved = localStorage.getItem("known.notify.conversations");\n  if (saved !== null) return saved !== "false";\n  const toggle = $("#notify-conversations");\n  return toggle ? toggle.checked : true;\n}'''
+          new='''function notificationEnabled() {\n  const toggle = $("#notify-conversations");\n  if (toggle) return toggle.checked;\n  const saved = localStorage.getItem("known.notify.conversations");\n  return saved !== "false";\n}'''
+          if old not in text: raise SystemExit('notificationEnabled target not found')
+          text=text.replace(old,new,1)
+          text=text.replace('api("/api/integrations/gmail/messages")','api(`/api/integrations/gmail/messages?_=${Date.now()}`, { cache: "no-store" })')
+          old='''  list.innerHTML = "";\n  messages.forEach((message) => {'''
+          new='''  list.innerHTML = "";\n  const grouped = new Map();\n  messages.forEach((message) => {\n    const key = message.session_id || (message.external_thread_id ? `gmail:${message.external_thread_id}` : message.external_message_id);\n    const previous = grouped.get(key);\n    if (!previous || Date.parse(message.received_at || "") > Date.parse(previous.received_at || "")) grouped.set(key, message);\n  });\n  [...grouped.values()].forEach((message) => {'''
+          if old not in text: raise SystemExit('render inbox target not found')
+          text=text.replace(old,new,1)
+          old='''  inboxRefreshTimer = window.setInterval(() => {\n    const activeView = document.querySelector(".view.active-view")?.id;\n    if (activeView !== "view-inbox" && activeView !== "view-conversation" && activeView !== "view-overview") return;\n    refreshInboxMessages().catch((error) => console.warn("Live inbox refresh failed:", error));\n  }, 2000);'''
+          new='''  inboxRefreshTimer = window.setInterval(() => {\n    refreshInboxMessages().catch((error) => console.warn("Live inbox refresh failed:", error));\n  }, 1000);'''
+          if old not in text: raise SystemExit('refresh target not found')
+          text=text.replace(old,new,1)
+          integ.write_text(text)
+
+          # Frontend: make New conversation create a durable thread immediately,
+          # and add a clear-current-thread action.
+          app=Path('frontend/app.js')
+          text=app.read_text()
+          old='''  if (newSession) {\n    sessionId = null;\n    awaitingNewSessionMessage = true;\n    newSessionStartedAt = Date.now();\n    setConversationLoading(false);\n    $("#messages").innerHTML = `<div class="empty-state">Waiting for a new message from ${customer.name}.</div>`;\n    return;\n  }'''
+          new='''  if (newSession) {\n    setConversationLoading(true);\n    const response = await authenticatedFetch(`/api/sessions?customer_id=${encodeURIComponent(customer.id)}`, { method: "POST" });\n    if (!response || !response.ok) {\n      setConversationLoading(false);\n      $("#messages").innerHTML = `<div class="empty-state">Unable to create a new conversation.</div>`;\n      return;\n    }\n    const data = await response.json();\n    sessionId = data.session_id;\n    awaitingNewSessionMessage = false;\n    newSessionStartedAt = 0;\n    localStorage.setItem(`known.session.${customer.id}`, sessionId);\n    setConversationLoading(false);\n    $("#messages").innerHTML = `<div class="empty-state">Start a new conversation with ${customer.name}.</div>`;\n    if (typeof window.loadConversationThreads === "function") window.loadConversationThreads(customer);\n    return;\n  }'''
+          if old not in text: raise SystemExit('new session target not found')
+          text=text.replace(old,new,1)
+          old='''function setupConversation() { $("#new-session").addEventListener("click", () => selectedCustomer && loadConversation(selectedCustomer, true)); $("#composer").addEventListener("submit", async (event) => {'''
+          new='''function setupConversation() {\n  $("#new-session").addEventListener("click", () => selectedCustomer && loadConversation(selectedCustomer, true));\n  $("#clear-session")?.addEventListener("click", async () => {\n    if (!selectedCustomer || !sessionId) return;\n    const response = await authenticatedFetch(`/api/sessions/${encodeURIComponent(sessionId)}?customer_id=${encodeURIComponent(selectedCustomer.id)}`, { method: "DELETE" });\n    if (!response?.ok) return;\n    localStorage.removeItem(`known.session.${selectedCustomer.id}`);\n    sessionId = null;\n    $("#messages").innerHTML = `<div class="empty-state">Conversation cleared.</div>`;\n    if (typeof window.loadConversationThreads === "function") window.loadConversationThreads(selectedCustomer);\n  });\n  $("#composer").addEventListener("submit", async (event) => {'''
+          if old not in text: raise SystemExit('setup conversation target not found')
+          text=text.replace(old,new,1)
+          # Export a tiny bridge so integrations can refresh thread list without coupling modules.
+          text=text.replace('async function openConversation(customer) {','window.loadConversationThreads = async function loadConversationThreads(customer) {\n  if (!customer || !$("#conversation-threads")) return;\n  const response = await authenticatedFetch(`/api/sessions?customer_id=${encodeURIComponent(customer.id)}`);\n  const data = await response?.json().catch(() => ({ sessions: [] }));\n  const list = $("#conversation-threads");\n  list.innerHTML = "";\n  (data.sessions || []).forEach((thread) => {\n    const button = document.createElement("button");\n    button.type = "button"; button.className = `conversation-thread${thread.id === sessionId ? " active" : ""}`;\n    button.innerHTML = `<span><strong></strong><small></small></span><em>×</em>`;\n    const updated = thread.updated_at ? new Date(thread.updated_at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";\n    button.querySelector("strong").textContent = thread.id.startsWith("gmail:") ? "Gmail conversation" : "Conversation";\n    button.querySelector("small").textContent = updated;\n    button.querySelector("em").addEventListener("click", async (event) => { event.stopPropagation(); const r = await authenticatedFetch(`/api/sessions/${encodeURIComponent(thread.id)}?customer_id=${encodeURIComponent(customer.id)}`, { method: "DELETE" }); if (r?.ok) window.loadConversationThreads(customer); });\n    button.addEventListener("click", async () => { sessionId = thread.id; localStorage.setItem(`known.session.${customer.id}`, sessionId); await loadConversation(customer); window.loadConversationThreads(customer); });\n    list.appendChild(button);\n  });\n};\n\nasync function openConversation(customer) {')
+          text=text.replace('  switchView("conversation");\n  try { await loadConversation(customer);','  switchView("conversation");\n  try { await loadConversationThreads(customer); await loadConversation(customer);')
+          app.write_text(text)
+
+          # Frontend: thread history UI beside the DM and a clear button.
+          html=Path('frontend/index.html')
+          text=html.read_text()
+          text=text.replace('<button id="new-session" class="secondary-button" type="button">New conversation</button>','<div class="conversation-actions"><button id="new-session" class="secondary-button" type="button">New conversation</button><button id="clear-session" class="text-button" type="button">Clear</button></div>')
+          text=text.replace('<div class="conversation-layout"><section class="panel conversation-card">','<div class="conversation-layout"><aside class="panel conversation-history"><div class="panel-head"><span>Conversations</span></div><div id="conversation-threads" class="conversation-threads"><div class="empty-state">No previous conversations.</div></div></aside><section class="panel conversation-card">')
+          text=text.replace('.conversation-head{align-items:center}.conversation-layout{max-width:900px}', '.conversation-head{align-items:center}.conversation-actions{display:flex;align-items:center;gap:10px}.conversation-layout{max-width:1100px;display:grid;grid-template-columns:260px minmax(0,1fr);gap:14px}.conversation-history{min-height:650px;overflow:hidden}.conversation-threads{display:flex;flex-direction:column;padding:8px}.conversation-thread{appearance:none;border:0;background:transparent;width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px;border-radius:8px;text-align:left;cursor:pointer}.conversation-thread:hover,.conversation-thread.active{background:#f1f5f2}.conversation-thread span{min-width:0;display:grid;gap:3px}.conversation-thread strong{font-size:10px;color:#314139}.conversation-thread small{font-size:8px;color:#8a948e}.conversation-thread em{font-style:normal;color:#a0aaa4;font-size:13px}.conversation-thread em:hover{color:#b44}.conversation-card{min-width:0}')
+          text=text.replace('@media(max-width:600px){.customer-detail-body', '@media(max-width:800px){.conversation-layout{grid-template-columns:1fr}.conversation-history{min-height:auto;max-height:220px}.conversation-actions{flex-wrap:wrap}}@media(max-width:600px){.customer-detail-body')
+          html.write_text(text)
+          PY
+      - name: Verify syntax
+        run: |
+          python -m py_compile backend/app/*.py
+          node --check frontend/app.js
+          node --check frontend/integrations.js
+      - name: Commit and remove patch runner
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backend/app frontend/app.js frontend/integrations.js frontend/index.html
+          git rm .github/workflows/apply-thread-fix.yml .github/workflows/patch-notifications.yml 2>/dev/null || true
+          git commit -m "fix: make conversations durable threads and strengthen live notifications"
+          git push
