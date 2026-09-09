@@ -97,12 +97,14 @@ function showCustomerNotification(message) {
   toast.addEventListener("click", () => {
     clearNotificationBadge();
     dismissNotification(toast);
-    window.dispatchEvent(new CustomEvent("known:gmail-session", { detail: {
+    const detail = {
       customerId: message.customer_id || null,
       sessionId: message.session_id || (message.external_thread_id ? `gmail:${message.external_thread_id}` : null),
       senderEmail: message.sender_email || null,
       source: "notification"
-    }}));
+    };
+    window.dispatchEvent(new CustomEvent("known:gmail-session", { detail }));
+    window.dispatchEvent(new CustomEvent("known:notification-open", { detail }));
   });
   stack.appendChild(toast);
   requestAnimationFrame(() => toast.classList.add("is-visible"));
