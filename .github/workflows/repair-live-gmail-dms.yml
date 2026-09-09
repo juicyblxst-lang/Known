@@ -1,0 +1,213 @@
+name: Repair Known live Gmail DMs
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor == 'juicyblxst-lang'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch live Gmail polling and DM continuation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          main = Path('backend/app/main.py')
+          s = main.read_text()
+          old = '''async def _poll_gmail_once() -> None:
+    if not integrations.configured or not gmail.configured or not durable_sessions.configured:
+        logger.warning("Background Gmail poll skipped: dependencies not configured")
+        return
+    connections = integrations.connections()
+    for connection in connections:
+        business_id = connection.get("business_id")
+        if not business_id: continue
+        try:
+            result = await asyncio.to_thread(process_gmail_messages, business_id, connection, agent, store, durable_sessions, integrations, gmail)
+            logger.info("Background Gmail poll: business=%s processed=%s matched=%s created=%s failed=%s", business_id, result.get("processed", 0), result.get("matched", 0), result.get("created", 0), result.get("failed", 0))
+        except Exception:
+            logger.exception("Background Gmail poll failed for business %s", business_id)
+
+async def _gmail_poll_loop() -> None:
+    while True:
+        try: await _poll_gmail_once()
+        except Exception: logger.exception("Background Gmail poll cycle failed")
+        await asyncio.sleep(GMAIL_POLL_INTERVAL_SECONDS)
+'''
+          new = '''async def _poll_gmail_once() -> None:
+    if not integrations.configured or not gmail.configured or not durable_sessions.configured:
+        logger.warning("KNOWN_GMAIL_POLL_SKIP dependencies_not_configured")
+        return
+    connections = integrations.connections()
+    if not connections:
+        logger.info("KNOWN_GMAIL_POLL_EMPTY no_gmail_connections")
+        return
+
+    async def poll_connection(connection):
+        business_id = connection.get("business_id")
+        if not business_id:
+            return
+        try:
+            result = await asyncio.to_thread(
+                process_gmail_messages,
+                business_id,
+                connection,
+                agent,
+                store,
+                durable_sessions,
+                integrations,
+                gmail,
+            )
+            logger.info(
+                "Background Gmail poll: business=%s processed=%s matched=%s created=%s failed=%s",
+                business_id,
+                result.get("processed", 0),
+                result.get("matched", 0),
+                result.get("created", 0),
+                result.get("failed", 0),
+            )
+        except Exception:
+            logger.exception("Background Gmail poll failed for business %s", business_id)
+
+    await asyncio.gather(*(poll_connection(connection) for connection in connections))
+
+async def _gmail_poll_loop() -> None:
+    logger.info("KNOWN_GMAIL_POLLER_STARTED interval_seconds=%d", GMAIL_POLL_INTERVAL_SECONDS)
+    while True:
+        cycle_started = asyncio.get_running_loop().time()
+        try:
+            await _poll_gmail_once()
+        except Exception:
+            logger.exception("Background Gmail poll cycle failed")
+        elapsed = asyncio.get_running_loop().time() - cycle_started
+        logger.info("KNOWN_GMAIL_POLL_CYCLE_COMPLETE elapsed_seconds=%.2f", elapsed)
+        await asyncio.sleep(max(0.5, GMAIL_POLL_INTERVAL_SECONDS - elapsed))
+'''
+          if old not in s:
+              raise SystemExit('main.py poller block did not match exactly')
+          s = s.replace(old, new, 1)
+          s = s.replace('logger.info("Background Gmail poller started: interval_seconds=%d", GMAIL_POLL_INTERVAL_SECONDS)', 'logger.info("KNOWN_GMAIL_LIFESPAN_STARTED interval_seconds=%d", GMAIL_POLL_INTERVAL_SECONDS)', 1)
+          main.write_text(s)
+
+          integ = Path('frontend/integrations.js')
+          s = integ.read_text()
+          marker = 'function showCustomerNotification(message) {'
+          if marker not in s:
+              raise SystemExit('integrations.js notification function missing')
+          # Make notification opening an explicit app-level action while retaining the existing Gmail-session event for compatibility.
+          old = '''window.dispatchEvent(new CustomEvent("known:gmail-session", { detail: {
+      customerId: message.customer_id || null,
+      sessionId: message.session_id || (message.external_thread_id ? `gmail:${message.external_thread_id}` : null),
+      senderEmail: message.sender_email || null,
+      source: "notification"
+    }}));'''
+          new = '''const detail = {
+      customerId: message.customer_id || null,
+      sessionId: message.session_id || (message.external_thread_id ? `gmail:${message.external_thread_id}` : null),
+      senderEmail: message.sender_email || null,
+      source: "notification"
+    };
+    window.dispatchEvent(new CustomEvent("known:gmail-session", { detail }));
+    window.dispatchEvent(new CustomEvent("known:notification-open", { detail }));'''
+          if old not in s:
+              raise SystemExit('integrations.js notification dispatch did not match exactly')
+          s = s.replace(old, new, 1)
+          integ.write_text(s)
+
+          app = Path('frontend/app.js')
+          s = app.read_text()
+          live_marker = 'KNOWN_LIVE_CONVERSATION_REFRESH_V2'
+          if live_marker not in s:
+              insertion = r'''
+
+// KNOWN_LIVE_CONVERSATION_REFRESH_V2: keep the open DM synchronized with the durable thread.
+let conversationRefreshInFlight = false;
+let conversationRefreshTimer = null;
+let lastConversationSnapshot = "";
+
+async function refreshOpenConversation() {
+  if (!selectedCustomer || !sessionId || conversationRefreshInFlight) return;
+  const view = $("#view-conversation");
+  if (!view || view.hidden) return;
+  conversationRefreshInFlight = true;
+  try {
+    const response = await authenticatedFetch(`/api/sessions/${encodeURIComponent(sessionId)}?customer_id=${encodeURIComponent(selectedCustomer.id)}&_=${Date.now()}`, { cache: "no-store" });
+    if (!response?.ok) return;
+    const data = await response.json().catch(() => null);
+    if (!data || data.session_id !== sessionId) return;
+    const messages = data.messages || [];
+    const snapshot = messages.map((item) => `${item.role}:${item.content}`).join("\n");
+    if (snapshot !== lastConversationSnapshot) {
+      const wasNearBottom = (() => { const node = $("#messages"); if (!node) return true; return node.scrollHeight - node.scrollTop - node.clientHeight < 120; })();
+      renderConversation(messages);
+      if (!wasNearBottom) return;
+    }
+    lastConversationSnapshot = snapshot;
+    if (typeof window.loadConversationThreads === "function") window.loadConversationThreads(selectedCustomer);
+  } catch (error) {
+    console.warn("Live conversation refresh failed:", error);
+  } finally {
+    conversationRefreshInFlight = false;
+  }
+}
+
+function startConversationRefresh() {
+  if (conversationRefreshTimer) return;
+  conversationRefreshTimer = window.setInterval(() => { refreshOpenConversation(); }, 1000);
+}
+
+window.addEventListener("known:inbox-refresh", () => refreshOpenConversation());
+window.addEventListener("known:notification-open", async (event) => {
+  const detail = event.detail || {};
+  const customer = customers.find((item) => item.id === detail.customerId) || customers.find((item) => item.email?.toLowerCase() === detail.senderEmail?.toLowerCase());
+  if (!customer) return;
+  const targetSessionId = detail.sessionId || null;
+  sessionId = targetSessionId || sessionId || localStorage.getItem(`known.session.${customer.id}`) || null;
+  if (sessionId) localStorage.setItem(`known.session.${customer.id}`, sessionId);
+  await openConversation(customer);
+  lastConversationSnapshot = "";
+  await refreshOpenConversation();
+});
+'''
+              needle = '\nasync function openConversation(customer) {'
+              if needle not in s:
+                  raise SystemExit('app.js openConversation anchor missing')
+              s = s.replace(needle, insertion + needle, 1)
+          # Ensure the live refresher starts once during app initialization.
+          if 'startConversationRefresh();' not in s:
+              init_anchor = '\ninit();'
+              if init_anchor not in s:
+                  raise SystemExit('app.js init anchor missing')
+              s = s.replace(init_anchor, '\nstartConversationRefresh();\ninit();', 1)
+          app.write_text(s)
+          print('patched main.py, integrations.js, app.js')
+          PY
+
+      - name: Validate syntax and required wiring
+        run: |
+          python -m compileall -q backend
+          node --check frontend/app.js
+          node --check frontend/integrations.js
+          grep -q 'KNOWN_GMAIL_POLLER_STARTED' backend/app/main.py
+          grep -q 'KNOWN_LIVE_CONVERSATION_REFRESH_V2' frontend/app.js
+          grep -q 'known:notification-open' frontend/integrations.js
+          grep -q 'known:notification-open' frontend/app.js
+
+      - name: Commit repair and remove patch workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backend/app/main.py frontend/app.js frontend/integrations.js
+          git commit -m "fix: make Gmail notifications and live DM threads reliable"
+          git rm .github/workflows/repair-live-gmail-dms.yml
+          git commit -m "chore: remove temporary Gmail repair workflow"
+          git push origin main
