@@ -108,6 +108,32 @@ def test_shipping_details_learned_mid_conversation_are_persisted(tmp_path: Path,
     assert second.recommended_action.startswith("Use the customer's previously recorded shipping timing")
 
 
+def test_supabase_durability_failure_does_not_break_sibyl_memory(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("SIBYL_MEMORY_DB", str(tmp_path / "memory.db"))
+    memory = SibylMemory()
+    monkeypatch.setattr(memory, "_durable_remember", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("Supabase 500")))
+
+    ok, error = memory.remember("business-1", "customer-1", "Customer constraint: never auto-ship replacements.", "customer_constraint")
+    assert ok is True
+    assert error == ""
+
+    result = memory.search("business-1", "customer-1", "damaged replacement")
+    assert result.available is True
+    assert any("never auto-ship replacements" in str(hit.get("content", "")) for hit in result.memories)
+
+
+def test_durable_search_failure_does_not_hide_sibyl_memory(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("SIBYL_MEMORY_DB", str(tmp_path / "memory.db"))
+    memory = SibylMemory()
+    ok, error = memory.remember("business-1", "customer-1", "Customer preference: expedited handling.", "customer_preference")
+    assert ok is True and error == ""
+    monkeypatch.setattr(memory, "_durable_search", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("Supabase 500")))
+
+    result = memory.search("business-1", "customer-1", "late delivery")
+    assert result.available is True
+    assert any("expedited handling" in str(hit.get("content", "")) for hit in result.memories)
+
+
 def test_approval_constraint_variants_are_adaptive():
     variants = [
         "Please don't send replacements without asking me first.",
