@@ -21,6 +21,8 @@ class FakeSessions:
 
 class FakeIntegrationStore:
     def __init__(self): self.rows = {}; self.records = []
+    def message_status(self, business_id, external_id):
+        return self.rows.get(external_id)
     def seen(self, business_id, external_id): return self.rows.get(external_id, {}).get("processing_status") == "processed"
     def claim_message(self, business_id, data):
         external_id = data["external_message_id"]
@@ -39,7 +41,11 @@ class FakeIntegrationStore:
 
 
 class FakeGmail:
-    def list_messages(self, token, max_results=20): return [{"id": "m1", "threadId": "t1"}]
+    def __init__(self): self.full_fetches = 0
+    def list_message_ids(self, token, max_results=20): return ["m1"]
+    def get_message(self, token, message_id):
+        self.full_fetches += 1
+        return {"id": "m1", "threadId": "t1"}
     def parse_message(self, message): return {"external_message_id": "m1", "external_thread_id": "t1", "sender_email": "maya@example.com", "recipient_email": "support@example.com", "subject": "Where is my order?", "body": "Where is my order?", "message_id_header": "<m1@example.com>"}
     def send(self, token, to, subject, body, thread_id=None, in_reply_to=None):
         assert thread_id == "t1" and in_reply_to == "<m1@example.com>"
@@ -66,12 +72,25 @@ class FakeAgent:
 
 def test_gmail_to_customer_to_sibyl_to_agent_to_gmail():
     integration = FakeIntegrationStore()
-    result = process_gmail_messages("business-a", {"access_token": "token"}, FakeAgent(), FakeStore(), FakeSessions(), integration, FakeGmail())
+    gmail = FakeGmail()
+    result = process_gmail_messages("business-a", {"access_token": "token"}, FakeAgent(), FakeStore(), FakeSessions(), integration, gmail)
     assert result["processed"] == 1
     assert result["matched"] == 1
     assert result["ignored"] == 0
     assert result["created"] == 0
     assert result["failed"] == 0
     assert integration.rows["m1"]["processing_status"] == "processed"
+    assert gmail.full_fetches == 1
     assert any(r[0] == "inbound" for r in integration.records)
     assert any(r[0] == "outbound" for r in integration.records)
+
+
+def test_known_failed_messages_are_not_fetched_again():
+    integration = FakeIntegrationStore()
+    integration.rows["m1"] = {"id": "m1", "processing_status": "failed", "attempt_count": 2}
+    gmail = FakeGmail()
+    result = process_gmail_messages("business-a", {"access_token": "token"}, FakeAgent(), FakeStore(), FakeSessions(), integration, gmail)
+    assert result["processed"] == 0
+    assert result["ignored"] == 1
+    assert result["failed"] == 0
+    assert gmail.full_fetches == 0
