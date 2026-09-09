@@ -7,7 +7,6 @@ let inboxLoading = false;
 let inboxSyncing = false;
 let inboxRefreshTimer = null;
 let knownInboxIds = new Set();
-let notificationAudioContext = null;
 let notificationCount = 0;
 
 function injectNotificationUi() {
@@ -72,28 +71,6 @@ function clearNotificationBadge() {
   if (document.title === "New email · Known") document.title = "Known — Customer Workspace";
 }
 
-function playNotificationSound() {
-  try {
-    notificationAudioContext ||= new (window.AudioContext || window.webkitAudioContext)();
-    const context = notificationAudioContext;
-    if (context.state === "suspended") context.resume().catch(() => {});
-    const now = context.currentTime;
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
-    oscillator.type = "sine";
-    oscillator.frequency.setValueAtTime(740, now);
-    oscillator.frequency.exponentialRampToValueAtTime(980, now + 0.09);
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.055, now + 0.012);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
-    oscillator.connect(gain).connect(context.destination);
-    oscillator.start(now);
-    oscillator.stop(now + 0.23);
-  } catch (error) {
-    console.debug("Notification sound unavailable:", error);
-  }
-}
-
 function dismissNotification(toast) {
   if (!toast) return;
   toast.classList.remove("is-visible");
@@ -129,7 +106,6 @@ function showCustomerNotification(message) {
   stack.appendChild(toast);
   requestAnimationFrame(() => toast.classList.add("is-visible"));
   incrementNotificationBadge();
-  playNotificationSound();
   window.setTimeout(() => dismissNotification(toast), 8000);
 }
 
@@ -253,6 +229,22 @@ async function loadInboxMessages({showLoading = false} = {}) {
   } finally { inboxLoading = false; }
 }
 
+async function refreshInboxMessages() {
+  if (inboxLoading) return inboxMessages || [];
+  inboxLoading = true;
+  try {
+    const response = await api("/api/integrations/gmail/messages");
+    const data = await response?.json().catch(() => ({ messages: [] }));
+    if (!response?.ok) return inboxMessages || [];
+    const nextMessages = data.messages || [];
+    notifyForNewMessages(nextMessages);
+    inboxMessages = nextMessages;
+    renderInbox(inboxMessages);
+    window.dispatchEvent(new CustomEvent("known:inbox-refresh", { detail: { messages: inboxMessages } }));
+    return inboxMessages;
+  } finally { inboxLoading = false; }
+}
+
 async function syncInbox({background = false} = {}) {
   if (inboxSyncing) return inboxMessages || [];
   inboxSyncing = true;
@@ -261,15 +253,10 @@ async function syncInbox({background = false} = {}) {
     const response = await api("/api/integrations/gmail/sync", { method: "POST" });
     const data = await response?.json().catch(() => ({}));
     if (!response?.ok) { const node = $("#inbox-status"); if (node) node.textContent = data.detail || "Unable to sync Gmail."; await refreshGmailStatus(); return inboxMessages || []; }
-    const messages = await api("/api/integrations/gmail/messages");
-    const messageData = await messages?.json().catch(() => ({ messages: [] }));
-    const nextMessages = messageData.messages || [];
-    notifyForNewMessages(nextMessages);
-    inboxMessages = nextMessages;
-    renderInbox(inboxMessages, data);
-    window.dispatchEvent(new CustomEvent("known:inbox-refresh", { detail: { messages: inboxMessages } }));
+    await refreshInboxMessages();
+    renderInbox(inboxMessages || [], data);
     await refreshGmailStatus();
-    return inboxMessages;
+    return inboxMessages || [];
   } finally { inboxSyncing = false; }
 }
 
@@ -278,7 +265,7 @@ function startInboxRefresh() {
   inboxRefreshTimer = window.setInterval(() => {
     const activeView = document.querySelector(".view.active-view")?.id;
     if (activeView !== "view-inbox" && activeView !== "view-conversation" && activeView !== "view-overview") return;
-    syncInbox({background: true}).catch((error) => console.warn("Live Gmail refresh failed:", error));
+    refreshInboxMessages().catch((error) => console.warn("Live inbox refresh failed:", error));
   }, 10000);
 }
 
@@ -288,18 +275,12 @@ async function handleViewChange(event) {
   if (view === "inbox") {
     clearNotificationBadge();
     await loadInboxMessages({showLoading: !inboxMessages});
-    syncInbox({background: true}).catch((error) => console.warn("Background Gmail sync failed:", error));
+    refreshInboxMessages().catch((error) => console.warn("Background inbox refresh failed:", error));
   }
 }
 
 function init() {
   injectNotificationUi();
-  window.addEventListener("pointerdown", () => {
-    try {
-      notificationAudioContext ||= new (window.AudioContext || window.webkitAudioContext)();
-      if (notificationAudioContext.state === "suspended") notificationAudioContext.resume().catch(() => {});
-    } catch (error) { /* Browser does not expose Web Audio. */ }
-  }, { once: true });
   document.addEventListener("visibilitychange", () => { if (!document.hidden) clearNotificationBadge(); });
   const fileInput = $("#csv-file"); const importButton = $("#import-csv"); if (importButton) importButton.disabled = true; fileInput?.addEventListener("change", () => inspectCsvFile(fileInput.files?.[0])); importButton?.addEventListener("click", importCsv); $("#go-to-customers")?.addEventListener("click", () => { location.href = "./index.html?view=customers&imported=1"; }); $("#connect-gmail")?.addEventListener("click", connectGmail); $("#sync-inbox")?.addEventListener("click", () => syncInbox()); window.addEventListener("known:view-change", handleViewChange); window.addEventListener("known:import-complete", async () => { await refreshGmailStatus(); }); startInboxRefresh(); loadInboxMessages().catch((error) => console.warn("Initial inbox load failed:", error)); refreshGmailStatus();
 }
