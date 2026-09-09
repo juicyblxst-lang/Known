@@ -74,6 +74,15 @@ def _find_customer(store:StructuredStore,business_id:str,email:str)->dict[str,An
     if hasattr(store,"customer_by_email"): return store.customer_by_email(email,business_id)
     rows=store._get("customers",{"business_id":f"eq.{business_id}","email":f"eq.{email.lower()}","archived_at":"is.null","select":"id,name,email,tier","limit":"1"}); return rows[0] if rows else None
 
+def _gmail_session(sessions:SupabaseSessionStore,thread_id:str|None,customer_id:str,business_id:str)->tuple[str,Any]:
+    base=f"gmail:{thread_id}" if thread_id else f"gmail:{customer_id}"
+    try:
+        return base,sessions.get_or_create(base,customer_id,business_id)
+    except ValueError as exc:
+        scoped=f"{base}:{customer_id}"
+        logger.warning("Gmail thread belongs to another customer; using customer-scoped session: business=%s thread=%s customer=%s",business_id,thread_id,customer_id)
+        return scoped,sessions.get_or_create(scoped,customer_id,business_id)
+
 def _restore_sent_message(business_id:str,external_id:str,status_row:dict[str,Any],sessions:SupabaseSessionStore,integration_store:IntegrationStore,gmail:GmailIntegration,token:str)->bool:
     session_id=status_row.get("session_id"); customer_id=status_row.get("customer_id"); reply=status_row.get("outbound_body") or ""
     if session_id and customer_id and reply:
@@ -113,6 +122,7 @@ def process_gmail_messages(business_id:str,connection:dict[str,Any],agent:KnownA
                 try: integration_store.mark_failed(business_id,external_id,str(exc))
                 except Exception: pass
             continue
+        parsed:dict[str,Any]={}
         try:
             raw=gmail.get_message(token,external_id)
             parsed=gmail.parse_message(raw)
@@ -128,7 +138,7 @@ def process_gmail_messages(business_id:str,connection:dict[str,Any],agent:KnownA
                 if not hasattr(store,"create_customer"): raise RuntimeError("Customer store cannot create new customers")
                 customer=store.create_customer(business_id,sender,parsed.get("sender_name","") or sender.split("@",1)[0]); created+=1
             integration_store.remember_identity(business_id,customer["id"],customer["email"])
-            session_id=f"gmail:{parsed.get('external_thread_id') or external_id}"; session=sessions.get_or_create(session_id,customer["id"],business_id)
+            session_id,session=_gmail_session(sessions,parsed.get("external_thread_id"),customer["id"],business_id)
             body=(parsed.get("body") or "").strip() or "Please review this support email."
             if not any(m.content==body and m.role=="user" for m in session.messages): sessions.append(session_id,Message(role="user",content=body))
             orders=store.orders(customer["id"],business_id); request=SupportContextRequest(customer=Customer(**customer),message=body,conversation=list(session.messages),orders=[Order(**o) for o in orders])
@@ -142,7 +152,7 @@ def process_gmail_messages(business_id:str,connection:dict[str,Any],agent:KnownA
             gmail.mark_read(token,external_id); processed+=1; matched+=1
         except Exception as exc:
             failed+=1
-            logger.exception("Gmail message processing failed: business=%s external_id=%s subject=%r error=%s",business_id,external_id,parsed.get("subject") if 'parsed' in locals() else None,exc)
+            logger.exception("Gmail message processing failed: business=%s external_id=%s subject=%r error=%s",business_id,external_id,parsed.get("subject"),exc)
             if external_id:
                 try: integration_store.mark_failed(business_id,external_id,str(exc))
                 except Exception: pass
