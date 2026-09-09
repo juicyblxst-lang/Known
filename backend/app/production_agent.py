@@ -76,6 +76,10 @@ class KnownAgent:
             # the customer does not say "remember". Retain the customer's wording.
             (r"(?=.*\b(?:never|don(?:'t|t)|do not|avoid)\b)(?=.*\b(?:replace\w*|replacement\w*|ship\w*|send\w*)\b)(?=.*\b(?:automatically|auto[- ]?ship|without\s+(?:my\s+)?(?:approval|permission|asking)|confirm(?:ation)?|ask\s+me|check\s+with\s+me)\b)(.{1,1000})$", "customer_constraint"),
             (r"(.{1,500}\b(?:confirm|ask|check)\s+(?:with\s+me\s+)?first\b.{0,500}\b(?:replace|replacement|ship|send)\b.{0,300})$", "customer_constraint"),
+            # A customer can introduce new operational details mid-conversation. Keep
+            # shipping timing/address instructions even when they were absent from CSV.
+            (r"(?=.*\b(?:ship|send|reship|re-?ship)\w*\b)(?=.*\b(?:\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?)\b)(.{1,1500})$", "shipping_instruction"),
+            (r"(?=.*\b(?:new\s+address|different\s+address|office|workplace|address\s+is)\b)(?=.*\b(?:ship|send|reship|re-?ship)\w*\b)(.{1,1500})$", "shipping_instruction"),
         )
         for pattern, memory_type in patterns:
             match = re.match(pattern, text, re.IGNORECASE)
@@ -107,7 +111,9 @@ class KnownAgent:
 Relevant durable customer memory is required context for Known's support decisions.
 Use relevant memory as decision-making context, not merely as a citation.
 Never invent customer history. Give a concise, empathetic answer. Treat order data as current facts and memory as historical context.
-If memory establishes a relevant preference or prior support pattern, adapt the proposed resolution to it.
+If memory establishes a relevant preference, shipping instruction, prior support decision, or newly supplied customer detail, adapt the proposed resolution to it.
+When a customer message is vague, use the customer's stored history to explain what is known and ask only the next useful question.
+Do not repeat information unnecessarily. Apologize only when the situation warrants it.
 Never claim an operational action has happened unless the backend has actually executed it."""
         context = {"customer": self._customer_payload(request), "orders": self._orders(request), "conversation": self._conversation(request), "retrieved_memory": memories, "decision_and_action": action, "current_message": request.message}
         raw_reply = self._generate(system, context)
@@ -140,7 +146,9 @@ Never claim an operational action has happened unless the backend has actually e
         if any(word in text for word in ("refund", "return", "cancel")): return "Review order eligibility and offer the applicable return/refund workflow."
         if any(word in text for word in ("replace", "replacement", "damaged")) and any(x in memory_text for x in ("automatically", "auto-ship", "auto ship", "without my approval", "without approval", "confirm first", "ask me first")):
             return "Confirm the customer's approval before arranging a replacement; do not auto-ship it."
-        if any(word in text for word in ("late", "where is", "tracking", "delivery")):
+        if any(word in text for word in ("late", "where is", "tracking", "delivery", "haven't received", "have not received", "not received", "didn't receive", "did not receive")):
+            if any(x in memory_text for x in ("shipping instruction", "new address", "different address")):
+                return "Use the customer's previously recorded shipping timing and destination to explain the current delivery status, then ask whether they want to change the schedule."
             if any(x in memory_text for x in ("expedited", "urgent", "time-sensitive")): return "Prioritize the latest shipment check and reflect the customer's previous expedited preference."
             if any(x in memory_text for x in ("monitor", "previous delayed")): return "Check the latest shipment status and proactively monitor the delivery, reflecting the customer's previous support preference."
             return "Check the latest shipment status and provide the tracking update."
