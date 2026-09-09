@@ -24,6 +24,16 @@ logger = logging.getLogger("known.main")
 agent = KnownAgent(); durable_sessions = SupabaseSessionStore(); store = StructuredStore(); gmail = GmailIntegration(); integrations = IntegrationStore()
 
 GMAIL_POLL_INTERVAL_SECONDS = 5
+_support_locks: dict[str, asyncio.Lock] = {}
+_support_locks_guard = asyncio.Lock()
+
+async def _support_lock(key: str) -> asyncio.Lock:
+    async with _support_locks_guard:
+        lock = _support_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _support_locks[key] = lock
+        return lock
 
 async def _poll_gmail_once() -> None:
     if not integrations.configured or not gmail.configured or not durable_sessions.configured:
@@ -115,20 +125,28 @@ async def support(request: SupportRequest,session_id:str|None=None,auth:AuthCont
     except (httpx.HTTPError,ValueError) as exc: raise HTTPException(status_code=502,detail="Customer data service unavailable") from exc
     if not durable_sessions.configured: raise HTTPException(status_code=503,detail="Durable conversation persistence is not configured")
     resolved_session_id=session_id or request.conversation_id or f"{request.customer_id}:{os.urandom(8).hex()}"
-    try: session=durable_sessions.get_or_create(resolved_session_id,request.customer_id,auth.business_id)
-    except ValueError as exc: raise HTTPException(status_code=403,detail="session does not belong to customer") from exc
-    except httpx.HTTPError as exc: raise HTTPException(status_code=502,detail="Conversation persistence service unavailable") from exc
-    try:
-        durable_sessions.append(resolved_session_id,Message(role="user",content=request.message))
-        context_request=SupportContextRequest(customer=customer_data,message=request.message,conversation=[*session.messages,Message(role="user",content=request.message)],orders=orders_data)
-        result=agent.handle(context_request,auth=auth)
-        durable_sessions.append(resolved_session_id,Message(role="assistant",content=result.reply))
-    except httpx.HTTPError as exc: raise HTTPException(status_code=502,detail="Conversation persistence service unavailable") from exc
-    except RuntimeError as exc: raise HTTPException(status_code=502,detail=str(exc)) from exc
-    except Exception as exc: raise HTTPException(status_code=502,detail="Agent service unavailable") from exc
-    persisted=durable_sessions.get(resolved_session_id,request.customer_id,auth.business_id)
-    if persisted is None: raise HTTPException(status_code=502,detail="Conversation persistence verification failed")
-    return SupportSessionResponse(**result.model_dump(),session_id=resolved_session_id,conversation=persisted.messages,persistence="supabase")
+    lock = await _support_lock(f"{auth.business_id}:{resolved_session_id}")
+    async with lock:
+        try: session=durable_sessions.get_or_create(resolved_session_id,request.customer_id,auth.business_id)
+        except ValueError as exc: raise HTTPException(status_code=403,detail="session does not belong to customer") from exc
+        except httpx.HTTPError as exc: raise HTTPException(status_code=502,detail="Conversation persistence service unavailable") from exc
+        # Idempotency guard: if the same message already completed in this session,
+        # return the existing conversation instead of generating another Known reply.
+        if session.messages and session.messages[-1].role == "assistant" and len(session.messages) >= 2:
+            previous_user = session.messages[-2]
+            if previous_user.role == "user" and previous_user.content.strip() == request.message.strip():
+                return SupportSessionResponse(customer_id=request.customer_id,reply=session.messages[-1].content,memories_used=[],memory_written=False,recommended_action=None,degraded_memory=False,session_id=resolved_session_id,conversation=session.messages,persistence="supabase")
+        try:
+            durable_sessions.append(resolved_session_id,Message(role="user",content=request.message))
+            context_request=SupportContextRequest(customer=customer_data,message=request.message,conversation=[*session.messages,Message(role="user",content=request.message)],orders=orders_data)
+            result=agent.handle(context_request,auth=auth)
+            durable_sessions.append(resolved_session_id,Message(role="assistant",content=result.reply))
+        except httpx.HTTPError as exc: raise HTTPException(status_code=502,detail="Conversation persistence service unavailable") from exc
+        except RuntimeError as exc: raise HTTPException(status_code=502,detail=str(exc)) from exc
+        except Exception as exc: raise HTTPException(status_code=502,detail="Agent service unavailable") from exc
+        persisted=durable_sessions.get(resolved_session_id,request.customer_id,auth.business_id)
+        if persisted is None: raise HTTPException(status_code=502,detail="Conversation persistence verification failed")
+        return SupportSessionResponse(**result.model_dump(),session_id=resolved_session_id,conversation=persisted.messages,persistence="supabase")
 
 FRONTEND_DIR=Path(__file__).resolve().parents[2]/"frontend"
 if FRONTEND_DIR.exists(): app.mount("/",StaticFiles(directory=FRONTEND_DIR,html=True),name="frontend")
