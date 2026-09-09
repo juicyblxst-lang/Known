@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 from typing import Any
@@ -49,6 +50,19 @@ class KnownAgent:
     def _search_memory(self, business_id: str, customer_id: str, query: str): return self.memory.search(business_id, customer_id, query)
     def _remember(self, business_id: str, customer_id: str, content: str, memory_type: str): return self.memory.remember(business_id, customer_id, content, memory_type)
     def _record_event(self, business_id: str, customer_id: str, kind: str, body: dict): return self.memory.record_event(business_id, customer_id, kind, body)
+
+    @staticmethod
+    def _sanitize_reply(reply: str) -> str:
+        """Keep customer-facing replies plain text and hide internal import/file references."""
+        text = str(reply or "").strip()
+        # Known never exposes internal CSV/import implementation details to customers.
+        text = re.sub(r"\b(?:[A-Za-z0-9._-]+\.(?:csv|tsv))\b", "your customer records", text, flags=re.IGNORECASE)
+        text = re.sub(r"\b(?:csv|tsv)\s+(?:file|import|upload)\b", "customer records", text, flags=re.IGNORECASE)
+        text = re.sub(r"\b(?:file|import)\s+(?:named|called)\s+[^\s,.;:!?]+", "your customer records", text, flags=re.IGNORECASE)
+        # No markdown emphasis: customer-facing Known text is always normal/plain.
+        text = re.sub(r"\*{1,3}", "", text)
+        text = re.sub(r"`{1,3}", "", text)
+        return re.sub(r"[ \t]{2,}", " ", text).strip()
 
     @staticmethod
     def _extract_durable_memory(message: str) -> tuple[str, str] | None:
@@ -110,15 +124,17 @@ Never invent customer history. Give a concise, empathetic answer. Treat order da
 If memory establishes a relevant preference, shipping instruction, prior support decision, or newly supplied customer detail, adapt the proposed resolution to it.
 When a customer message is vague, use the customer's stored history to explain what is known and ask only the next useful question.
 Do not repeat information unnecessarily. Apologize only when the situation warrants it.
-Never claim an operational action has happened unless the backend has actually executed it."""
+Never claim an operational action has happened unless the backend has actually executed it.
+Customer-facing replies must be plain text only: do not use Markdown, bold markers, asterisks, backticks, CSV/TSV references, import names, filenames, or internal implementation details. Refer to imported customer/order information simply as customer records or order history."""
         context = {"customer": self._customer_payload(request), "orders": self._orders(request), "conversation": self._conversation(request), "retrieved_memory": memories, "decision_and_action": action, "current_message": request.message}
         raw_reply = self._generate(system, context)
         reply = raw_reply
         try:
-            parsed = __import__("json").loads(raw_reply)
+            parsed = json.loads(raw_reply)
             if isinstance(parsed, dict) and isinstance(parsed.get("reply"), str): reply = parsed["reply"]
         except (ValueError, TypeError):
             pass
+        reply = self._sanitize_reply(reply)
 
         memory_written = False
         extracted = self._extract_durable_memory(request.message)
