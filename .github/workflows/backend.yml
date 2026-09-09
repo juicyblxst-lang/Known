@@ -65,7 +65,7 @@ jobs:
       - name: Run tests
         run: python -m pytest -q
 
-      - name: Validate frontend assets
+      - name: Validate frontend assets and notification wiring
         working-directory: .
         run: |
           test -f frontend/index.html
@@ -77,10 +77,18 @@ jobs:
           grep -q '/api/support' frontend/app.js
           grep -q 'customer_id' frontend/app.js
           grep -q '/api/integrations/gmail/messages' frontend/integrations.js
-          if grep -q 'new Audio\|AudioContext\|/api/integrations/gmail/sync' frontend/integrations.js; then
-            echo "Notification refresh must not poll Gmail or create a browser notification sound."
-            exit 1
-          fi
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          text = Path('frontend/integrations.js').read_text()
+          match = re.search(r'async function refreshInboxMessages\(\).*?(?=\nasync function |\nfunction |\nlet |\nconst |\Z)', text, re.S)
+          assert match, 'refreshInboxMessages function missing'
+          refresh = match.group(0)
+          assert '/api/integrations/gmail/messages' in refresh, 'notification refresh is not DB-backed'
+          assert '/api/integrations/gmail/sync' not in refresh, 'notification refresh is polling Gmail API'
+          assert 'new Audio' not in text and 'AudioContext' not in text, 'browser notification sound is still wired'
+          assert 'known:gmail-session' in text, 'notification click is not wired to existing conversation event'
+          PY
 
       - name: Validate frontend JavaScript syntax
         run: |
