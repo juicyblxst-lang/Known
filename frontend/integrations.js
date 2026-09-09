@@ -8,6 +8,43 @@ let inboxSyncing = false;
 let inboxRefreshTimer = null;
 let knownInboxIds = new Set();
 let notificationAudioContext = null;
+let notificationCount = 0;
+
+function injectNotificationUi() {
+  if (!document.querySelector("#notification-stack")) {
+    const stack = document.createElement("div");
+    stack.id = "notification-stack";
+    stack.setAttribute("aria-live", "polite");
+    stack.setAttribute("aria-label", "Notifications");
+    document.body.appendChild(stack);
+  }
+  if (!document.querySelector("#notification-style")) {
+    const style = document.createElement("style");
+    style.id = "notification-style";
+    style.textContent = `
+      #notification-stack{position:fixed;top:72px;right:22px;z-index:9000;width:min(380px,calc(100vw - 28px));display:flex;flex-direction:column;gap:10px;pointer-events:none}
+      .known-notification{appearance:none;border:1px solid #dbe5df;background:#fff;color:#24332c;border-radius:13px;padding:13px 14px;display:grid;grid-template-columns:9px minmax(0,1fr) auto;gap:11px;align-items:start;text-align:left;box-shadow:0 18px 46px rgba(31,48,40,.16);cursor:pointer;pointer-events:auto;opacity:0;transform:translate3d(24px,-8px,0) scale(.98);transition:opacity .2s ease,transform .24s ease,box-shadow .2s ease}
+      .known-notification.is-visible{opacity:1;transform:translate3d(0,0,0) scale(1)}
+      .known-notification:hover{box-shadow:0 20px 52px rgba(31,48,40,.22);border-color:#c8d8ce}
+      .known-notification-dot{width:8px;height:8px;border-radius:50%;background:#315d50;margin-top:5px;box-shadow:0 0 0 4px #edf4ef}
+      .known-notification-copy{min-width:0;display:grid;gap:2px}
+      .known-notification-copy strong{font-size:11px;line-height:1.2;font-weight:750;letter-spacing:.01em}
+      .known-notification-copy small{font-size:9px;line-height:1.3;color:#6d7972;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .known-notification-copy p{margin:2px 0 0;font-size:11px;line-height:1.4;color:#34443b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .known-notification-arrow{font-size:15px;line-height:1;color:#6a8176;padding-top:1px}
+      @media(max-width:600px){#notification-stack{top:62px;right:14px;width:calc(100vw - 28px)}.known-notification{padding:12px}}
+    `;
+    document.head.appendChild(style);
+  }
+  const inboxNav = document.querySelector('[data-view="inbox"]');
+  if (inboxNav && !inboxNav.querySelector(".known-inbox-badge")) {
+    const badge = document.createElement("span");
+    badge.className = "known-inbox-badge";
+    badge.hidden = true;
+    badge.style.cssText = "display:inline-grid;place-items:center;min-width:16px;height:16px;padding:0 4px;margin-left:auto;border-radius:99px;background:#315d50;color:#fff;font-size:8px;font-weight:750;line-height:1;";
+    inboxNav.appendChild(badge);
+  }
+}
 
 function notificationEnabled() {
   const toggle = $("#notify-conversations");
@@ -17,6 +54,21 @@ function notificationEnabled() {
 
 function messageKey(message) {
   return message?.external_message_id || `${message?.external_thread_id || "thread"}:${message?.received_at || ""}:${message?.sender_email || ""}:${message?.subject || ""}`;
+}
+
+function incrementNotificationBadge() {
+  notificationCount += 1;
+  const badge = document.querySelector(".known-inbox-badge");
+  if (badge) { badge.textContent = notificationCount > 9 ? "9+" : String(notificationCount); badge.hidden = false; badge.style.display = "inline-grid"; }
+  if (!document.hidden) return;
+  document.title = "New email · Known";
+}
+
+function clearNotificationBadge() {
+  notificationCount = 0;
+  const badge = document.querySelector(".known-inbox-badge");
+  if (badge) { badge.hidden = true; badge.style.display = "none"; }
+  if (document.title === "New email · Known") document.title = "Known — Customer Workspace";
 }
 
 function playNotificationSound() {
@@ -51,18 +103,20 @@ function showCustomerNotification(message) {
   if (!notificationEnabled()) return;
   const stack = $("#notification-stack");
   if (!stack) return;
-  const existing = stack.querySelector(`[data-notification-id="${CSS.escape(messageKey(message))}"]`);
+  const key = messageKey(message);
+  const existing = [...stack.children].find((node) => node.dataset.notificationId === key);
   if (existing) return;
 
   const toast = document.createElement("button");
   toast.type = "button";
   toast.className = "known-notification";
-  toast.dataset.notificationId = messageKey(message);
+  toast.dataset.notificationId = key;
   toast.innerHTML = `<span class="known-notification-dot" aria-hidden="true"></span><span class="known-notification-copy"><strong>New email</strong><small></small><p></p></span><span class="known-notification-arrow" aria-hidden="true">↗</span>`;
   toast.querySelector("small").textContent = message.sender_email || "Customer";
   toast.querySelector("p").textContent = message.subject || "New support message";
   toast.setAttribute("aria-label", `New email from ${message.sender_email || "customer"}. Open conversation.`);
   toast.addEventListener("click", () => {
+    clearNotificationBadge();
     dismissNotification(toast);
     window.dispatchEvent(new CustomEvent("known:gmail-session", { detail: {
       customerId: message.customer_id || null,
@@ -73,6 +127,7 @@ function showCustomerNotification(message) {
   });
   stack.appendChild(toast);
   requestAnimationFrame(() => toast.classList.add("is-visible"));
+  incrementNotificationBadge();
   playNotificationSound();
   window.setTimeout(() => dismissNotification(toast), 8000);
 }
@@ -173,6 +228,7 @@ function renderInbox(messages, syncResult = null) {
     row.querySelector("strong").textContent = message.subject || "No subject";
     row.querySelector("small").textContent = `${message.sender_email || "Unknown sender"} · ${message.body || ""}`;
     row.addEventListener("click", () => {
+      clearNotificationBadge();
       const customerId = message.customer_id || null;
       const sessionId = message.session_id || (message.external_thread_id ? `gmail:${message.external_thread_id}` : null);
       window.dispatchEvent(new CustomEvent("known:gmail-session", { detail: { customerId, sessionId, senderEmail: message.sender_email } }));
@@ -229,10 +285,21 @@ async function handleViewChange(event) {
   const view = event.detail?.view;
   if (view === "settings") await refreshGmailStatus();
   if (view === "inbox") {
+    clearNotificationBadge();
     await loadInboxMessages({showLoading: !inboxMessages});
     syncInbox({background: true}).catch((error) => console.warn("Background Gmail sync failed:", error));
   }
 }
 
-function init() { const fileInput = $("#csv-file"); const importButton = $("#import-csv"); if (importButton) importButton.disabled = true; fileInput?.addEventListener("change", () => inspectCsvFile(fileInput.files?.[0])); importButton?.addEventListener("click", importCsv); $("#go-to-customers")?.addEventListener("click", () => { location.href = "./index.html?view=customers&imported=1"; }); $("#connect-gmail")?.addEventListener("click", connectGmail); $("#sync-inbox")?.addEventListener("click", () => syncInbox()); window.addEventListener("known:view-change", handleViewChange); window.addEventListener("known:import-complete", async () => { await refreshGmailStatus(); }); startInboxRefresh(); loadInboxMessages().catch((error) => console.warn("Initial inbox load failed:", error)); refreshGmailStatus(); }
+function init() {
+  injectNotificationUi();
+  window.addEventListener("pointerdown", () => {
+    try {
+      notificationAudioContext ||= new (window.AudioContext || window.webkitAudioContext)();
+      if (notificationAudioContext.state === "suspended") notificationAudioContext.resume().catch(() => {});
+    } catch (error) { /* Browser does not expose Web Audio. */ }
+  }, { once: true });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) clearNotificationBadge(); });
+  const fileInput = $("#csv-file"); const importButton = $("#import-csv"); if (importButton) importButton.disabled = true; fileInput?.addEventListener("change", () => inspectCsvFile(fileInput.files?.[0])); importButton?.addEventListener("click", importCsv); $("#go-to-customers")?.addEventListener("click", () => { location.href = "./index.html?view=customers&imported=1"; }); $("#connect-gmail")?.addEventListener("click", connectGmail); $("#sync-inbox")?.addEventListener("click", () => syncInbox()); window.addEventListener("known:view-change", handleViewChange); window.addEventListener("known:import-complete", async () => { await refreshGmailStatus(); }); startInboxRefresh(); loadInboxMessages().catch((error) => console.warn("Initial inbox load failed:", error)); refreshGmailStatus();
+}
 init();
