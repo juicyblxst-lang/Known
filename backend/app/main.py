@@ -23,7 +23,7 @@ from .supabase_sessions import SupabaseSessionStore
 logger = logging.getLogger("known.main")
 agent = KnownAgent(); durable_sessions = SupabaseSessionStore(); store = StructuredStore(); gmail = GmailIntegration(); integrations = IntegrationStore()
 
-GMAIL_POLL_INTERVAL_SECONDS = 15
+GMAIL_POLL_INTERVAL_SECONDS = 5
 
 async def _poll_gmail_once() -> None:
     if not integrations.configured or not gmail.configured or not durable_sessions.configured:

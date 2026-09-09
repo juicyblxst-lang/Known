@@ -90,7 +90,7 @@ def _gmail_session(sessions:SupabaseSessionStore,thread_id:str|None,customer_id:
                 return candidate,existing
         except ValueError:
             logger.warning("Ignoring customer-mismatched conversation session: business=%s session=%s customer=%s",business_id,candidate,customer_id)
-    latest=sessions.latest(customer_id,business_id)
+    latest=sessions.latest(customer_id,business_id) if hasattr(sessions,"latest") else None
     if latest is not None:
         return latest.id,latest
     try:
@@ -155,7 +155,7 @@ def process_gmail_messages(business_id:str,connection:dict[str,Any],agent:KnownA
                 if not hasattr(store,"create_customer"): raise RuntimeError("Customer store cannot create new customers")
                 customer=store.create_customer(business_id,sender,parsed.get("sender_name","") or sender.split("@",1)[0]); created+=1
             integration_store.remember_identity(business_id,customer["id"],customer["email"])
-            existing_mapping=integration_store.session_for_thread(business_id,parsed.get("external_thread_id")) if parsed.get("external_thread_id") else None
+            existing_mapping=integration_store.session_for_thread(business_id,parsed.get("external_thread_id")) if parsed.get("external_thread_id") and hasattr(integration_store,"session_for_thread") else None
             session_id,session=_gmail_session(sessions,parsed.get("external_thread_id"),customer["id"],business_id,existing_mapping)
             body=(parsed.get("body") or "").strip() or "Please review this support email."
             if not any(m.content==body and m.role=="user" for m in session.messages): sessions.append(session_id,Message(role="user",content=body))
