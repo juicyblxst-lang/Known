@@ -35,37 +35,15 @@ class SupabaseSessionStore:
         return data if isinstance(data, list) else []
 
     def get(self, session_id: str, customer_id: str, business_id: str) -> ConversationSession | None:
-        rows = self._request("GET", "conversations", params={
-            "id": f"eq.{session_id}",
-            "customer_id": f"eq.{customer_id}",
-            "business_id": f"eq.{business_id}",
-            "select": "id,customer_id,created_at,updated_at",
-            "limit": "1",
-        })
+        rows = self._request("GET", "conversations", params={"id": f"eq.{session_id}", "customer_id": f"eq.{customer_id}", "business_id": f"eq.{business_id}", "select": "id,customer_id,created_at,updated_at", "limit": "1"})
         if not rows:
             return None
         row = rows[0]
-        messages = self._request("GET", "conversation_messages", params={
-            "conversation_id": f"eq.{session_id}",
-            "select": "role,content,created_at",
-            "order": "created_at.asc",
-        })
-        return ConversationSession(
-            id=row["id"],
-            customer_id=row["customer_id"],
-            messages=[Message(role=m["role"], content=m["content"]) for m in messages],
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-        )
+        messages = self._request("GET", "conversation_messages", params={"conversation_id": f"eq.{session_id}", "select": "role,content,created_at", "order": "created_at.asc"})
+        return ConversationSession(id=row["id"], customer_id=row["customer_id"], messages=[Message(role=m["role"], content=m["content"]) for m in messages], created_at=row["created_at"], updated_at=row["updated_at"])
 
     def list(self, customer_id: str, business_id: str, limit: int = 50) -> list[dict[str, Any]]:
-        return self._request("GET", "conversations", params={
-            "customer_id": f"eq.{customer_id}",
-            "business_id": f"eq.{business_id}",
-            "select": "id,customer_id,created_at,updated_at",
-            "order": "updated_at.desc",
-            "limit": str(limit),
-        })
+        return self._request("GET", "conversations", params={"customer_id": f"eq.{customer_id}", "business_id": f"eq.{business_id}", "select": "id,customer_id,created_at,updated_at", "order": "updated_at.desc", "limit": str(limit)})
 
     def latest(self, customer_id: str, business_id: str) -> ConversationSession | None:
         rows = self.list(customer_id, business_id, limit=1)
@@ -85,18 +63,8 @@ class SupabaseSessionStore:
 
     def append(self, session_id: str, message: Message) -> None:
         self._request("POST", "conversation_messages", json={"conversation_id": session_id, "role": message.role, "content": message.content})
-        self._request(
-            "PATCH",
-            "conversations",
-            params={"id": f"eq.{session_id}"},
-            json={"updated_at": datetime.now(timezone.utc).isoformat()},
-        )
+        self._request("PATCH", "conversations", params={"id": f"eq.{session_id}"}, json={"updated_at": datetime.now(timezone.utc).isoformat()})
 
     def delete(self, session_id: str, customer_id: str, business_id: str) -> None:
-        # Delete children first so this works even if the existing FK is not CASCADE.
         self._request("DELETE", "conversation_messages", params={"conversation_id": f"eq.{session_id}"})
-        self._request("DELETE", "conversations", params={
-            "id": f"eq.{session_id}",
-            "customer_id": f"eq.{customer_id}",
-            "business_id": f"eq.{business_id}",
-        })
+        self._request("DELETE", "conversations", params={"id": f"eq.{session_id}", "customer_id": f"eq.{customer_id}", "business_id": f"eq.{business_id}"})
